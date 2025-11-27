@@ -184,8 +184,11 @@ class ExportManager:
         """Export a single resource group using aztfexport"""
         print(f"    Exporting resource group: {resource_group}")
         
-        # Ensure output directory exists
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Convert to absolute path to avoid path resolution issues
+        output_path = output_path.resolve()
+        
+        # Ensure parent directory exists (aztfexport will create the final directory)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Build aztfexport command
         # Ensure resource group name is a single string (handle spaces/special chars)
@@ -193,6 +196,7 @@ class ExportManager:
         
         # According to aztfexport documentation, resource group name MUST be LAST
         # Command structure: aztfexport resource-group [flags] <resource-group-name>
+        # Use absolute path to avoid path resolution issues
         cmd = [
             'aztfexport',
             'resource-group',
@@ -230,9 +234,10 @@ class ExportManager:
             print(f"    This may take several minutes...")
             
             # Don't capture output - let it stream to console so user can see progress
+            # Use the base directory as cwd to avoid path issues
             result = subprocess.run(
                 cmd,
-                cwd=str(output_path.parent),
+                cwd=str(Path(self.base_dir).resolve()),
                 timeout=3600,  # 1 hour timeout
                 # Remove capture_output to see real-time output
             )
