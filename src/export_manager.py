@@ -118,9 +118,13 @@ class ExportManager:
             
             rgs_data = json.loads(result.stdout)
             for rg in rgs_data:
-                rg_name = rg.get('name', '')
+                rg_name = rg.get('name', '').strip()  # Strip whitespace
                 if rg_name and rg_name not in exclude_rgs:
-                    resource_groups.append(rg_name)
+                    # Ensure it's a single resource group name (not a list or multiple values)
+                    if isinstance(rg_name, str) and rg_name:
+                        resource_groups.append(rg_name)
+                    else:
+                        print(f"  ⚠️  Skipping invalid resource group name: {rg_name}")
             
             print(f"  ✓ Found {len(resource_groups)} resource groups")
             return resource_groups
@@ -156,18 +160,19 @@ class ExportManager:
         output_path.mkdir(parents=True, exist_ok=True)
         
         # Build aztfexport command
+        # Ensure resource group name is a single string (handle spaces/special chars)
+        rg_name = str(resource_group).strip()
+        
+        # According to aztfexport documentation, resource group name MUST be LAST
+        # Command structure: aztfexport resource-group [flags] <resource-group-name>
         cmd = [
             'aztfexport',
             'resource-group',
-            resource_group,
             '--subscription-id', subscription_id,
             '--output-dir', str(output_path),
             '--non-interactive',
             '--verbose'  # Add verbose mode to see what's happening
         ]
-        
-        # Note: Removed --append flag as it might cause issues
-        # aztfexport will create files in the output directory
         
         # Add resource type filters if specified
         resource_types = self.config.get('aztfexport', {}).get('resource_types', [])
@@ -185,8 +190,14 @@ class ExportManager:
         additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
         cmd.extend(additional_flags)
         
+        # Resource group name MUST be last (per aztfexport documentation)
+        cmd.append(rg_name)
+        
         try:
-            print(f"    Running command: {' '.join(cmd)}")
+            # Print command with proper quoting for resource group name
+            cmd_display = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in cmd)
+            print(f"    Running command: {cmd_display}")
+            print(f"    Resource group: {rg_name}")
             print(f"    Output directory: {output_path}")
             print(f"    This may take several minutes...")
             

@@ -28,15 +28,24 @@ subscriptions:
 # aztfexport configuration
 aztfexport:
   # Resource types to export (empty = export all)
+  # Example: ["Microsoft.Compute/virtualMachines", "Microsoft.Network/virtualNetworks"]
   resource_types: []
   
-  # Resource groups to exclude
+  # Resource groups to exclude from export
+  # Add resource group names (exact match, case-sensitive)
+  # Example:
+  # exclude_resource_groups:
+  #   - "rg-exclude-this"
+  #   - "rg-test-only"
+  #   - "rg-temp-resources"
   exclude_resource_groups: []
   
   # Resources to exclude (by ID pattern)
+  # Example: ["/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.xxx/xxx"]
   exclude_resources: []
   
   # Additional aztfexport flags
+  # Example: ["--parallelism", "5"]
   additional_flags: []
 
 # Azure DevOps configuration
