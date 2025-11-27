@@ -19,6 +19,15 @@ global_excludes:
     # - "rg-system-*"
     # - "rg-azure-*"
 
+# Logging configuration
+logging:
+  # Log level: DEBUG, INFO, or ERROR
+  # DEBUG: Shows all messages including detailed debug information
+  # INFO: Shows informational messages, warnings, and errors (default)
+  # ERROR: Shows only error messages
+  # Can also be set via environment variable: LOG_LEVEL=DEBUG
+  level: INFO
+
 subscriptions:
   - id: "subscription-id-1"
     name: "Production Subscription 1"
