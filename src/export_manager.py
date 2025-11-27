@@ -118,9 +118,13 @@ class ExportManager:
             
             rgs_data = json.loads(result.stdout)
             for rg in rgs_data:
-                rg_name = rg.get('name', '')
+                rg_name = rg.get('name', '').strip()  # Strip whitespace
                 if rg_name and rg_name not in exclude_rgs:
-                    resource_groups.append(rg_name)
+                    # Ensure it's a single resource group name (not a list or multiple values)
+                    if isinstance(rg_name, str) and rg_name:
+                        resource_groups.append(rg_name)
+                    else:
+                        print(f"  ⚠️  Skipping invalid resource group name: {rg_name}")
             
             print(f"  ✓ Found {len(resource_groups)} resource groups")
             return resource_groups
@@ -156,14 +160,18 @@ class ExportManager:
         output_path.mkdir(parents=True, exist_ok=True)
         
         # Build aztfexport command
+        # Ensure resource group name is a single string (handle spaces/special chars)
+        rg_name = str(resource_group).strip()
+        
+        # According to aztfexport documentation, resource group name MUST be LAST
+        # Command structure: aztfexport resource-group [flags] <resource-group-name>
         cmd = [
             'aztfexport',
             'resource-group',
-            resource_group,
             '--subscription-id', subscription_id,
             '--output-dir', str(output_path),
             '--non-interactive',
-            '--append'
+            '--verbose'  # Add verbose mode to see what's happening
         ]
         
         # Add resource type filters if specified
@@ -182,32 +190,47 @@ class ExportManager:
         additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
         cmd.extend(additional_flags)
         
+        # Resource group name MUST be last (per aztfexport documentation)
+        cmd.append(rg_name)
+        
         try:
-            # Use current environment - aztfexport will use Azure CLI credentials
-            # from az login automatically
-            env = os.environ.copy()
-            # Ensure Azure CLI credentials are available to aztfexport
-            # aztfexport uses Azure CLI SDK which will automatically use az login credentials
+            # Print command with proper quoting for resource group name
+            cmd_display = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in cmd)
+            print(f"    Running command: {cmd_display}")
+            print(f"    Resource group: {rg_name}")
+            print(f"    Output directory: {output_path}")
+            print(f"    This may take several minutes...")
             
+            # Don't capture output - let it stream to console so user can see progress
             result = subprocess.run(
                 cmd,
                 cwd=str(output_path.parent),
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=3600  # 1 hour timeout
+                timeout=3600,  # 1 hour timeout
+                # Remove capture_output to see real-time output
             )
             
             if result.returncode == 0:
-                print(f"    ✓ Successfully exported {resource_group}")
-                return True
+                # Check if files were actually created
+                tf_files = list(output_path.glob('*.tf'))
+                if tf_files:
+                    print(f"    ✓ Successfully exported {resource_group}")
+                    print(f"      Created {len(tf_files)} Terraform file(s)")
+                    return True
+                else:
+                    print(f"    ⚠️  Command succeeded but no .tf files found in {output_path}")
+                    print(f"    💡 Check if the resource group has exportable resources")
+                    return False
             else:
-                print(f"    ✗ Error exporting {resource_group}:")
-                print(f"      {result.stderr}")
+                print(f"    ✗ Error exporting {resource_group} (exit code: {result.returncode})")
+                print(f"    💡 Check the output above for error details")
                 return False
                 
         except subprocess.TimeoutExpired:
-            print(f"    ✗ Timeout exporting {resource_group}")
+            print(f"    ✗ Timeout exporting {resource_group} (exceeded 1 hour)")
+            return False
+        except FileNotFoundError:
+            print(f"    ✗ aztfexport not found. Make sure it's installed and in PATH")
+            print(f"    💡 Install with: go install github.com/Azure/aztfexport@latest")
             return False
         except Exception as e:
             print(f"    ✗ Error exporting {resource_group}: {str(e)}")

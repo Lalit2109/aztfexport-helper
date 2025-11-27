@@ -1,0 +1,57 @@
+# Example Configuration File
+# Copy relevant sections to your subscriptions.yaml
+
+# Example: Excluding specific resource groups
+aztfexport:
+  exclude_resource_groups:
+    - "rg-shared-services"      # Exclude shared services resource group
+    - "rg-monitoring"            # Exclude monitoring resources
+    - "rg-backup"                # Exclude backup resources
+    - "rg-temp-*"                # Note: Wildcards not supported, use exact names
+
+# Example: Excluding specific resource types
+aztfexport:
+  resource_types:
+    - "Microsoft.Compute/virtualMachines"
+    - "Microsoft.Network/virtualNetworks"
+    - "Microsoft.Storage/storageAccounts"
+  # Only these resource types will be exported
+
+# Example: Excluding specific resources by ID
+aztfexport:
+  exclude_resources:
+    - "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-example/providers/Microsoft.Compute/virtualMachines/vm-to-exclude"
+    - "/subscriptions/12345678-1234-1234-1234-123456789012/resourceGroups/rg-example/providers/Microsoft.Storage/storageAccounts/storage-to-exclude"
+
+# Example: Combining multiple exclusions
+aztfexport:
+  # Exclude these resource groups entirely
+  exclude_resource_groups:
+    - "rg-shared"
+    - "rg-temp"
+    - "rg-test"
+  
+  # Exclude specific resources even if their RG is not excluded
+  exclude_resources:
+    - "/subscriptions/xxx/resourceGroups/rg-prod/providers/Microsoft.KeyVault/vaults/secret-vault"
+  
+  # Only export these resource types
+  resource_types:
+    - "Microsoft.Compute/virtualMachines"
+    - "Microsoft.Network/virtualNetworks"
+
+# Example: Full subscription configuration with exclusions
+subscriptions:
+  - id: "subscription-id-1"
+    name: "Production Subscription 1"
+    environment: "prod"
+    repo_name: "terraform-prod-sub-1"
+    repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"
+    export_enabled: true
+
+aztfexport:
+  exclude_resource_groups:
+    - "rg-shared-services"
+    - "rg-monitoring"
+    - "rg-backup"
+

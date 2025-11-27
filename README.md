@@ -74,14 +74,39 @@ subscriptions:
 ```yaml
 aztfexport:
   # Resource types to export (empty = export all)
+  # Example: ["Microsoft.Compute/virtualMachines", "Microsoft.Network/virtualNetworks"]
   resource_types: []
   
-  # Resource groups to exclude
-  exclude_resource_groups: []
+  # Resource groups to exclude from export (exact name match, case-sensitive)
+  # Example:
+  exclude_resource_groups:
+    - "rg-shared-services"    # Exclude shared services
+    - "rg-monitoring"         # Exclude monitoring resources
+    - "rg-backup"             # Exclude backup resources
   
-  # Resources to exclude (by ID pattern)
-  exclude_resources: []
+  # Resources to exclude (by full Azure resource ID)
+  # Example:
+  exclude_resources:
+    - "/subscriptions/xxx/resourceGroups/rg-example/providers/Microsoft.Compute/virtualMachines/vm-to-exclude"
+  
+  # Additional aztfexport flags
+  additional_flags: []
 ```
+
+**Example: Excluding Resource Groups**
+
+To exclude specific resource groups from export, add them to the `exclude_resource_groups` list:
+
+```yaml
+aztfexport:
+  exclude_resource_groups:
+    - "rg-shared-services"
+    - "rg-monitoring"
+    - "rg-temp-resources"
+    - "rg-test-only"
+```
+
+**Note:** Resource group names must match exactly (case-sensitive). Wildcards are not supported.
 
 ## Usage
 
