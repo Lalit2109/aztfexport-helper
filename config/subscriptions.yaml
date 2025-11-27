@@ -23,15 +23,11 @@ subscriptions:
   - id: "subscription-id-1"
     name: "Production Subscription 1"
     environment: "prod"
-    repo_name: "terraform-prod-sub-1"
-    repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"
     export_enabled: true
     
   - id: "subscription-id-2"
     name: "Development Subscription 1"
     environment: "dev"
-    repo_name: "terraform-dev-sub-1"
-    repo_url: "https://dev.azure.com/org/project/_git/terraform-dev-sub-1"
     export_enabled: true
     
   # Add remaining 33 subscriptions here
@@ -39,8 +35,6 @@ subscriptions:
   # - id: "subscription-id-X"
   #   name: "Subscription Name"
   #   environment: "prod|dev|staging"
-  #   repo_name: "terraform-{environment}-sub-X"
-  #   repo_url: "https://dev.azure.com/org/project/_git/terraform-{environment}-sub-X"
   #   export_enabled: true|false
 
 # aztfexport configuration
@@ -62,6 +56,11 @@ aztfexport:
   # Resources to exclude (by ID pattern)
   # Example: ["/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.xxx/xxx"]
   exclude_resources: []
+  
+  # Resource types to exclude (all resources of these types will be excluded)
+  # Example: ["Microsoft.Insights/components", "Microsoft.OperationalInsights/workspaces"]
+  # Note: This will query Azure to find all resources of these types and exclude them
+  exclude_resource_types: []
   
   # Additional aztfexport flags
   # Example: ["--parallelism", "5"]
@@ -90,21 +89,4 @@ output:
   # Default: true
   create_rg_folders: true
   
-  # Whether to initialize git repos locally
-  init_git_repos: false
-
-# Git push configuration
-git:
-  # Enable pushing to repositories (set to true after verifying exports)
-  # Default: false - exports only, no git push
-  push_to_repos: false
-  
-  # Branch to push to (default: main)
-  branch: "main"
-  
-  # Prefer SSH URLs over HTTPS (uses local SSH credentials)
-  # If true: Converts HTTPS URLs to SSH format automatically
-  # If false: Uses HTTPS with PAT token authentication
-  # Default: true
-  prefer_ssh: true
 

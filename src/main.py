@@ -1,5 +1,5 @@
 """
-Main script to orchestrate Azure resource export and git operations
+Main script to orchestrate Azure resource export to Terraform
 """
 
 import os
@@ -11,7 +11,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from export_manager import ExportManager
-from git_manager import GitManager
 
 
 def main():
@@ -21,20 +20,6 @@ def main():
     
     # Get configuration
     config_path = os.getenv('CONFIG_PATH', 'config/subscriptions.yaml')
-    
-    # Load config to check git push setting
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
-    # Check git push flag - environment variable overrides config file
-    push_to_repos_env = os.getenv('PUSH_TO_REPOS', '').lower()
-    if push_to_repos_env in ['true', 'false']:
-        push_to_repos = push_to_repos_env == 'true'
-    else:
-        # Use config file setting (default: false)
-        push_to_repos = config.get('git', {}).get('push_to_repos', False)
-    
-    git_branch = os.getenv('GIT_BRANCH') or config.get('git', {}).get('branch', 'main')
     
     print("=" * 70)
     print("Azure Infrastructure Export to Terraform")
@@ -90,12 +75,8 @@ def main():
     
     print()
     
-    # Initialize git manager (prefer SSH if configured)
-    prefer_ssh = config.get('git', {}).get('prefer_ssh', True)
-    git_manager = GitManager(export_manager.base_dir, prefer_ssh=prefer_ssh)
-    
-    # Step 1: Export resources
-    print("Step 1: Exporting Azure resources...")
+    # Export resources
+    print("Exporting Azure resources...")
     print("-" * 70)
     
     try:
@@ -132,52 +113,6 @@ def main():
         json.dump(results, f, indent=2, default=str)
     print(f"\n✓ Export results saved to: {results_file}")
     
-    # Step 2: Push to repositories (if enabled)
-    if push_to_repos:
-        print("\n" + "=" * 70)
-        print("Step 2: Pushing to Azure DevOps repositories...")
-        print("-" * 70)
-        print("⚠️  Git push is ENABLED - changes will be pushed to repositories")
-        print()
-        
-        config = export_manager.config
-        subscriptions = config.get('subscriptions', [])
-        
-        push_results = git_manager.push_all_repos(
-            subscriptions,
-            Path(export_manager.base_dir),
-            git_branch,
-            config  # Pass config for repo creation
-        )
-        
-        print("\n" + "=" * 70)
-        print("Push Summary")
-        print("=" * 70)
-        
-        successful_pushes = sum(1 for v in push_results.values() if v)
-        print(f"Repositories pushed: {successful_pushes}/{len(push_results)}")
-        
-        for sub_id, success in push_results.items():
-            sub_name = next(
-                (s['name'] for s in subscriptions if s['id'] == sub_id),
-                sub_id
-            )
-            status = "✓" if success else "✗"
-            print(f"  {status} {sub_name}")
-    else:
-        print("\n" + "=" * 70)
-        print("Step 2: Git Push - SKIPPED")
-        print("=" * 70)
-        print("\n✓ Export completed successfully!")
-        print("  Git push is disabled - exported code is in local directory only")
-        print(f"  Review exported code in: {export_manager.base_dir}")
-        print("\nTo enable pushing to repositories after verification:")
-        print("  Option 1: Edit config/subscriptions.yaml")
-        print("    Set: git.push_to_repos: true")
-        print("\n  Option 2: Use environment variable (overrides config):")
-        print("    export PUSH_TO_REPOS=true")
-        print("    python src/main.py")
-    
     print("\n" + "=" * 70)
     print("Export completed!")
     print("=" * 70)
@@ -185,12 +120,6 @@ def main():
     print("\nNext steps:")
     print("1. Review exported Terraform code in the output directory")
     print("2. Test with: terraform init && terraform plan")
-    if not push_to_repos:
-        print("3. After verification, enable git push:")
-        print("   - Edit config/subscriptions.yaml: set git.push_to_repos: true")
-        print("   - Or use: export PUSH_TO_REPOS=true && python src/main.py")
-    else:
-        print("3. ✓ Code has been pushed to repositories")
 
 
 if __name__ == "__main__":
