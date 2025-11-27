@@ -149,16 +149,26 @@ cat exports/production-subscription-1/resource-group-1/main.tf
 
 Once you're happy with the exports, enable git push:
 
+**Prerequisites for Git Push:**
+1. Set up Azure DevOps Personal Access Token (PAT):
+   ```bash
+   export AZURE_DEVOPS_PAT="your-pat-token"
+   ```
+   Or in Azure DevOps pipelines, use `SYSTEM_ACCESS_TOKEN` (automatically available).
+
+2. Ensure you have "Contribute" permissions to the target repositories.
+
 **Option 1: Edit config file (recommended)**
 ```yaml
 # Edit config/subscriptions.yaml
 git:
   push_to_repos: true  # Change from false to true
-  branch: "main"
+  branch: "main"      # Default branch (can be overridden per subscription)
 ```
 
 Then run:
 ```bash
+export AZURE_DEVOPS_PAT="your-pat-token"
 python src/main.py
 ```
 
@@ -166,14 +176,31 @@ python src/main.py
 ```bash
 export PUSH_TO_REPOS=true
 export GIT_BRANCH=main
+export AZURE_DEVOPS_PAT="your-pat-token"
 python src/main.py
 ```
 
-This will:
-- Export resources (same as before)
-- Initialize git repositories in export directories
-- Commit the exported code
-- Push to Azure DevOps repositories
+**What happens during Git Push:**
+- Creates `.gitignore` file (excludes Terraform state files, etc.)
+- Creates `README.md` with subscription information
+- Initializes git repository (if not already initialized)
+- Commits all exported Terraform files
+- Pushes to Azure DevOps repository
+- Handles existing branches (pulls and merges if needed)
+
+**Per-Subscription Branch Configuration:**
+You can specify different branches per subscription:
+```yaml
+subscriptions:
+  - id: "subscription-id-1"
+    name: "Production Subscription 1"
+    repo_url: "https://dev.azure.com/org/project/_git/repo-1"
+    branch: "main"  # Override default branch for this subscription
+  - id: "subscription-id-2"
+    name: "Development Subscription 1"
+    repo_url: "https://dev.azure.com/org/project/_git/repo-2"
+    branch: "develop"  # Different branch for this subscription
+```
 
 ### Output Structure
 
@@ -293,10 +320,33 @@ export PATH=$PATH:$(go env GOPATH)/bin
 
 ### Git Push Failures
 
-- Check repository URLs in config
-- Verify SYSTEM_ACCESS_TOKEN is available
-- Ensure pipeline has Contribute permissions to repos
-- Check if repositories exist in Azure DevOps
+1. **Authentication Errors:**
+   ```bash
+   # For local execution, set Azure DevOps PAT
+   export AZURE_DEVOPS_PAT="your-pat-token"
+   
+   # In Azure DevOps pipelines, SYSTEM_ACCESS_TOKEN is automatically available
+   ```
+
+2. **Permission Errors:**
+   - Ensure you have "Contribute" permissions to the target repository
+   - Check that the PAT token has the correct scopes (Code: Read & Write)
+   - Verify the repository URL in `config/subscriptions.yaml` is correct
+
+3. **Repository Not Found:**
+   - Verify the `repo_url` in `config/subscriptions.yaml` is correct
+   - Ensure the repository exists in Azure DevOps
+   - Check that the repository name matches the `repo_name` field
+
+4. **Branch Issues:**
+   - The tool automatically pulls and merges if the branch exists remotely
+   - Ensure the branch name is correct (default: `main`)
+   - You can override the branch per subscription in the config
+
+5. **No Changes to Commit:**
+   - If you see "No changes to commit", the export may not have created new files
+   - Check the export logs to verify resources were exported
+   - Review the export directory to ensure `.tf` files exist
 
 ### Export Timeouts
 

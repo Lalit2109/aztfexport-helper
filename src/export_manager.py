@@ -174,6 +174,52 @@ class ExportManager:
             print(f"  ✗ Error listing resource groups: {str(e)}")
             return []
     
+    def _get_resources_by_type(
+        self,
+        subscription_id: str,
+        resource_group: str,
+        resource_types: List[str]
+    ) -> List[str]:
+        """Get all resource IDs of specified types in a resource group"""
+        resource_ids = []
+        
+        for resource_type in resource_types:
+            try:
+                result = subprocess.run(
+                    [
+                        self.az_cli_path,
+                        'resource', 'list',
+                        '--subscription', subscription_id,
+                        '--resource-group', resource_group,
+                        '--resource-type', resource_type,
+                        '--output', 'json'
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=True
+                )
+                
+                resources = json.loads(result.stdout)
+                for resource in resources:
+                    resource_id = resource.get('id', '')
+                    if resource_id:
+                        resource_ids.append(resource_id)
+                
+                if resources:
+                    print(f"      Found {len(resources)} resource(s) of type {resource_type} to exclude")
+                    
+            except subprocess.TimeoutExpired:
+                print(f"      ⚠️  Timeout querying resources of type {resource_type}")
+            except subprocess.CalledProcessError as e:
+                print(f"      ⚠️  Error querying resources of type {resource_type}: {e.stderr}")
+            except json.JSONDecodeError:
+                print(f"      ⚠️  Failed to parse resource list for type {resource_type}")
+            except Exception as e:
+                print(f"      ⚠️  Unexpected error querying {resource_type}: {str(e)}")
+        
+        return resource_ids
+    
     def _export_resource_group(
         self,
         subscription_id: str,
@@ -212,8 +258,23 @@ class ExportManager:
             for rt in resource_types:
                 cmd.extend(['--resource-type', rt])
         
+        # Get exclude resources list
+        exclude_resources = list(self.config.get('aztfexport', {}).get('exclude_resources', []))
+        
+        # If exclude_resource_types is specified, get all resources of those types and add to exclude list
+        exclude_resource_types = self.config.get('aztfexport', {}).get('exclude_resource_types', [])
+        if exclude_resource_types:
+            print(f"    Excluding resource types: {', '.join(exclude_resource_types)}")
+            excluded_resource_ids = self._get_resources_by_type(
+                subscription_id,
+                resource_group,
+                exclude_resource_types
+            )
+            exclude_resources.extend(excluded_resource_ids)
+            if excluded_resource_ids:
+                print(f"    Total resources to exclude: {len(excluded_resource_ids)}")
+        
         # Add exclude resources if specified
-        exclude_resources = self.config.get('aztfexport', {}).get('exclude_resources', [])
         if exclude_resources:
             for er in exclude_resources:
                 cmd.extend(['--exclude', er])
@@ -310,7 +371,8 @@ class ExportManager:
         print(f"Subscription ID: {subscription_id}")
         print(f"{'='*60}")
         
-        # Create subscription directory
+        # Create subscription directory under base_dir
+        # Structure: {base_dir}/{subscription-name}/
         sub_dir = Path(self.base_dir) / self._sanitize_name(subscription_name)
         sub_dir.mkdir(parents=True, exist_ok=True)
         
