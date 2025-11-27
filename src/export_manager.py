@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import shutil
+import fnmatch
 import yaml
 import json
 from pathlib import Path
@@ -59,6 +60,17 @@ class ExportManager:
         # If not found, return 'az' and let subprocess handle it
         # This will work if az is in PATH when subprocess runs
         return 'az'
+    
+    def _matches_exclude_pattern(self, rg_name: str, exclude_patterns: List[str]) -> bool:
+        """Check if resource group name matches any exclude pattern (supports wildcards)"""
+        for pattern in exclude_patterns:
+            # Exact match
+            if rg_name == pattern:
+                return True
+            # Wildcard match (supports * and ?)
+            if fnmatch.fnmatch(rg_name, pattern):
+                return True
+        return False
         
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -105,7 +117,13 @@ class ExportManager:
     def _get_resource_groups(self, subscription_id: str) -> List[str]:
         """Get list of resource groups in a subscription using Azure CLI"""
         resource_groups = []
-        exclude_rgs = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
+        
+        # Get global exclude patterns (with wildcard support)
+        global_excludes = self.config.get('global_excludes', {}).get('resource_groups', [])
+        # Get subscription-specific excludes
+        local_excludes = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
+        # Combine both lists
+        exclude_patterns = global_excludes + local_excludes
         
         try:
             result = subprocess.run(
@@ -117,16 +135,26 @@ class ExportManager:
             )
             
             rgs_data = json.loads(result.stdout)
+            excluded_count = 0
+            
             for rg in rgs_data:
                 rg_name = rg.get('name', '').strip()  # Strip whitespace
-                if rg_name and rg_name not in exclude_rgs:
+                if rg_name:
+                    # Check if it matches any exclude pattern (with wildcard support)
+                    if self._matches_exclude_pattern(rg_name, exclude_patterns):
+                        excluded_count += 1
+                        continue
+                    
                     # Ensure it's a single resource group name (not a list or multiple values)
                     if isinstance(rg_name, str) and rg_name:
                         resource_groups.append(rg_name)
                     else:
                         print(f"  ⚠️  Skipping invalid resource group name: {rg_name}")
             
-            print(f"  ✓ Found {len(resource_groups)} resource groups")
+            if excluded_count > 0:
+                print(f"  ✓ Found {len(resource_groups)} resource groups (excluded {excluded_count} matching patterns)")
+            else:
+                print(f"  ✓ Found {len(resource_groups)} resource groups")
             return resource_groups
             
         except subprocess.TimeoutExpired:
@@ -156,8 +184,11 @@ class ExportManager:
         """Export a single resource group using aztfexport"""
         print(f"    Exporting resource group: {resource_group}")
         
-        # Ensure output directory exists
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Convert to absolute path to avoid path resolution issues
+        output_path = output_path.resolve()
+        
+        # Ensure parent directory exists (aztfexport will create the final directory)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Build aztfexport command
         # Ensure resource group name is a single string (handle spaces/special chars)
@@ -165,13 +196,14 @@ class ExportManager:
         
         # According to aztfexport documentation, resource group name MUST be LAST
         # Command structure: aztfexport resource-group [flags] <resource-group-name>
+        # Use absolute path to avoid path resolution issues
         cmd = [
             'aztfexport',
             'resource-group',
             '--subscription-id', subscription_id,
             '--output-dir', str(output_path),
-            '--non-interactive',
-            '--verbose'  # Add verbose mode to see what's happening
+            '--non-interactive'
+            # Note: --verbose is not a valid flag for aztfexport
         ]
         
         # Add resource type filters if specified
@@ -202,22 +234,50 @@ class ExportManager:
             print(f"    This may take several minutes...")
             
             # Don't capture output - let it stream to console so user can see progress
+            # Use the base directory as cwd to avoid path issues
             result = subprocess.run(
                 cmd,
-                cwd=str(output_path.parent),
+                cwd=str(Path(self.base_dir).resolve()),
                 timeout=3600,  # 1 hour timeout
                 # Remove capture_output to see real-time output
             )
             
             if result.returncode == 0:
                 # Check if files were actually created
-                tf_files = list(output_path.glob('*.tf'))
+                # aztfexport might create files directly in output_path or in a subdirectory
+                # Check both the specified directory and recursively
+                tf_files_direct = list(output_path.glob('*.tf'))
+                tf_files_recursive = list(output_path.rglob('*.tf'))
+                
+                # Use recursive search to find all .tf files
+                tf_files = tf_files_recursive if tf_files_recursive else tf_files_direct
+                
                 if tf_files:
+                    # Get the actual directory where files were created
+                    actual_dir = tf_files[0].parent
                     print(f"    ✓ Successfully exported {resource_group}")
                     print(f"      Created {len(tf_files)} Terraform file(s)")
+                    if actual_dir != output_path:
+                        print(f"      Files created in: {actual_dir}")
                     return True
                 else:
-                    print(f"    ⚠️  Command succeeded but no .tf files found in {output_path}")
+                    # Show what's actually in the directory for debugging
+                    if output_path.exists():
+                        all_files = list(output_path.iterdir())
+                        print(f"    ⚠️  Command succeeded but no .tf files found")
+                        print(f"    Checking directory: {output_path}")
+                        print(f"    Directory exists: {output_path.exists()}")
+                        if all_files:
+                            print(f"    Found {len(all_files)} item(s) in directory:")
+                            for item in all_files[:5]:  # Show first 5 items
+                                item_type = "directory" if item.is_dir() else "file"
+                                print(f"      - {item.name} ({item_type})")
+                            if len(all_files) > 5:
+                                print(f"      ... and {len(all_files) - 5} more")
+                        else:
+                            print(f"    Directory is empty")
+                    else:
+                        print(f"    ⚠️  Command succeeded but output directory does not exist: {output_path}")
                     print(f"    💡 Check if the resource group has exportable resources")
                     return False
             else:
