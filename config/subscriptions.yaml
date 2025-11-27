@@ -101,4 +101,10 @@ git:
   
   # Branch to push to (default: main)
   branch: "main"
+  
+  # Prefer SSH URLs over HTTPS (uses local SSH credentials)
+  # If true: Converts HTTPS URLs to SSH format automatically
+  # If false: Uses HTTPS with PAT token authentication
+  # Default: true
+  prefer_ssh: true
 

@@ -90,8 +90,9 @@ def main():
     
     print()
     
-    # Initialize git manager
-    git_manager = GitManager(export_manager.base_dir)
+    # Initialize git manager (prefer SSH if configured)
+    prefer_ssh = config.get('git', {}).get('prefer_ssh', True)
+    git_manager = GitManager(export_manager.base_dir, prefer_ssh=prefer_ssh)
     
     # Step 1: Export resources
     print("Step 1: Exporting Azure resources...")
@@ -145,7 +146,8 @@ def main():
         push_results = git_manager.push_all_repos(
             subscriptions,
             Path(export_manager.base_dir),
-            git_branch
+            git_branch,
+            config  # Pass config for repo creation
         )
         
         print("\n" + "=" * 70)
