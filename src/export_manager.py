@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import shutil
+import fnmatch
 import yaml
 import json
 from pathlib import Path
@@ -59,6 +60,17 @@ class ExportManager:
         # If not found, return 'az' and let subprocess handle it
         # This will work if az is in PATH when subprocess runs
         return 'az'
+    
+    def _matches_exclude_pattern(self, rg_name: str, exclude_patterns: List[str]) -> bool:
+        """Check if resource group name matches any exclude pattern (supports wildcards)"""
+        for pattern in exclude_patterns:
+            # Exact match
+            if rg_name == pattern:
+                return True
+            # Wildcard match (supports * and ?)
+            if fnmatch.fnmatch(rg_name, pattern):
+                return True
+        return False
         
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -105,7 +117,13 @@ class ExportManager:
     def _get_resource_groups(self, subscription_id: str) -> List[str]:
         """Get list of resource groups in a subscription using Azure CLI"""
         resource_groups = []
-        exclude_rgs = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
+        
+        # Get global exclude patterns (with wildcard support)
+        global_excludes = self.config.get('global_excludes', {}).get('resource_groups', [])
+        # Get subscription-specific excludes
+        local_excludes = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
+        # Combine both lists
+        exclude_patterns = global_excludes + local_excludes
         
         try:
             result = subprocess.run(
@@ -117,16 +135,26 @@ class ExportManager:
             )
             
             rgs_data = json.loads(result.stdout)
+            excluded_count = 0
+            
             for rg in rgs_data:
                 rg_name = rg.get('name', '').strip()  # Strip whitespace
-                if rg_name and rg_name not in exclude_rgs:
+                if rg_name:
+                    # Check if it matches any exclude pattern (with wildcard support)
+                    if self._matches_exclude_pattern(rg_name, exclude_patterns):
+                        excluded_count += 1
+                        continue
+                    
                     # Ensure it's a single resource group name (not a list or multiple values)
                     if isinstance(rg_name, str) and rg_name:
                         resource_groups.append(rg_name)
                     else:
                         print(f"  ⚠️  Skipping invalid resource group name: {rg_name}")
             
-            print(f"  ✓ Found {len(resource_groups)} resource groups")
+            if excluded_count > 0:
+                print(f"  ✓ Found {len(resource_groups)} resource groups (excluded {excluded_count} matching patterns)")
+            else:
+                print(f"  ✓ Found {len(resource_groups)} resource groups")
             return resource_groups
             
         except subprocess.TimeoutExpired:
@@ -170,8 +198,8 @@ class ExportManager:
             'resource-group',
             '--subscription-id', subscription_id,
             '--output-dir', str(output_path),
-            '--non-interactive',
-            '--verbose'  # Add verbose mode to see what's happening
+            '--non-interactive'
+            # Note: --verbose is not a valid flag for aztfexport
         ]
         
         # Add resource type filters if specified

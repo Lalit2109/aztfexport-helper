@@ -1,6 +1,24 @@
 # Azure Subscriptions Configuration
 # Configure your 35 subscriptions here
 
+# Global exclusions (applied to all subscriptions)
+# These resource groups are excluded from export across all subscriptions
+# Wildcard patterns are supported (* and ?)
+global_excludes:
+  resource_groups:
+    # Azure-managed/system resource groups (wildcard supported)
+    - "Built-in-identity-rg"
+    - "networkwatcherRG"
+    - "NetworkWatcherRG_*"        # Network Watcher (all regions)
+    - "AzureBackupRG_*"           # Azure Backup
+    - "AzureSiteRecoveryRG_*"     # Azure Site Recovery
+    - "MC_*"                      # AKS managed clusters
+    - "azure-arc"                 # Azure Arc
+    - "DefaultResourceGroup-*"    # Default resource groups
+    # Add more patterns as needed
+    # - "rg-system-*"
+    # - "rg-azure-*"
+
 subscriptions:
   - id: "subscription-id-1"
     name: "Production Subscription 1"
@@ -31,12 +49,13 @@ aztfexport:
   # Example: ["Microsoft.Compute/virtualMachines", "Microsoft.Network/virtualNetworks"]
   resource_types: []
   
-  # Resource groups to exclude from export
-  # Add resource group names (exact match, case-sensitive)
+  # Resource groups to exclude from export (subscription-specific)
+  # Supports exact match and wildcard patterns (* and ?)
+  # These are in addition to global_excludes above
   # Example:
   # exclude_resource_groups:
-  #   - "rg-exclude-this"
-  #   - "rg-test-only"
+  #   - "rg-exclude-this"        # Exact match
+  #   - "rg-test-*"              # Wildcard pattern
   #   - "rg-temp-resources"
   exclude_resource_groups: []
   
