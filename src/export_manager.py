@@ -189,8 +189,9 @@ class ExportManager:
         if not exclude_resource_types:
             return ""
         
-        # Build query: type != 'ResourceType1' and type != 'ResourceType2' ...
-        # For resource group scope, we also need to filter by resourceGroup
+        # Build Azure Resource Graph query predicate
+        # Format: "type != 'ResourceType1' and type != 'ResourceType2' ..."
+        # Note: aztfexport query expects just the predicate part (without 'where' keyword)
         conditions = []
         for resource_type in exclude_resource_types:
             # Escape single quotes in resource type
@@ -237,23 +238,38 @@ class ExportManager:
                     print(f"    Excluding types: {', '.join(exclude_resource_types)}")
                 print(f"    Query: {query}")
                 
-                # aztfexport query mode syntax: aztfexport query [flags] -n "<query>" <resource-group-name>
-                # Resource group name MUST be last (similar to resource-group mode)
+                # aztfexport query mode syntax: aztfexport query [flags] <ARG where predicate>
+                # The query predicate MUST be the last argument (not resource group name)
+                # Note: -n is --non-interactive, NOT for query name! Use --non-interactive instead
                 cmd = [
                     'aztfexport',
                     'query',
                     '--subscription-id', subscription_id,
                     '--output-dir', str(output_path),
-                    '--non-interactive',
-                    '-n', query  # Query string using Azure Resource Graph syntax
+                    '--non-interactive'  # Use full flag name, NOT -n (which is the same flag)
                 ]
+                
+                # Add resource group filter to query predicate
+                # The query should filter by resourceGroup in the predicate itself
+                # Query format: "type != 'Type' and resourceGroup == 'rg-name'"
+                # Note: aztfexport query expects just the predicate, not "where ..."
+                if rg_name:
+                    # Add resource group filter to the query predicate
+                    if query:
+                        # Combine type exclusions with resource group filter
+                        query_with_rg = f"{query} and resourceGroup == '{rg_name}'"
+                    else:
+                        query_with_rg = f"resourceGroup == '{rg_name}'"
+                else:
+                    query_with_rg = query
                 
                 # Add additional flags if specified
                 additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
                 cmd.extend(additional_flags)
                 
-                # Resource group name MUST be last (per aztfexport documentation)
-                cmd.append(rg_name)
+                # Query predicate MUST be last argument (per aztfexport documentation)
+                # This is the ARG where predicate, not the resource group name
+                cmd.append(query_with_rg)
             else:
                 # Fall back to resource-group mode if query is empty
                 use_query_mode = False
