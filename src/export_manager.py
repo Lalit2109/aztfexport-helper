@@ -163,8 +163,11 @@ class ExportManager:
             '--subscription-id', subscription_id,
             '--output-dir', str(output_path),
             '--non-interactive',
-            '--append'
+            '--verbose'  # Add verbose mode to see what's happening
         ]
+        
+        # Note: Removed --append flag as it might cause issues
+        # aztfexport will create files in the output directory
         
         # Add resource type filters if specified
         resource_types = self.config.get('aztfexport', {}).get('resource_types', [])
@@ -183,31 +186,40 @@ class ExportManager:
         cmd.extend(additional_flags)
         
         try:
-            # Use current environment - aztfexport will use Azure CLI credentials
-            # from az login automatically
-            env = os.environ.copy()
-            # Ensure Azure CLI credentials are available to aztfexport
-            # aztfexport uses Azure CLI SDK which will automatically use az login credentials
+            print(f"    Running command: {' '.join(cmd)}")
+            print(f"    Output directory: {output_path}")
+            print(f"    This may take several minutes...")
             
+            # Don't capture output - let it stream to console so user can see progress
             result = subprocess.run(
                 cmd,
                 cwd=str(output_path.parent),
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=3600  # 1 hour timeout
+                timeout=3600,  # 1 hour timeout
+                # Remove capture_output to see real-time output
             )
             
             if result.returncode == 0:
-                print(f"    ✓ Successfully exported {resource_group}")
-                return True
+                # Check if files were actually created
+                tf_files = list(output_path.glob('*.tf'))
+                if tf_files:
+                    print(f"    ✓ Successfully exported {resource_group}")
+                    print(f"      Created {len(tf_files)} Terraform file(s)")
+                    return True
+                else:
+                    print(f"    ⚠️  Command succeeded but no .tf files found in {output_path}")
+                    print(f"    💡 Check if the resource group has exportable resources")
+                    return False
             else:
-                print(f"    ✗ Error exporting {resource_group}:")
-                print(f"      {result.stderr}")
+                print(f"    ✗ Error exporting {resource_group} (exit code: {result.returncode})")
+                print(f"    💡 Check the output above for error details")
                 return False
                 
         except subprocess.TimeoutExpired:
-            print(f"    ✗ Timeout exporting {resource_group}")
+            print(f"    ✗ Timeout exporting {resource_group} (exceeded 1 hour)")
+            return False
+        except FileNotFoundError:
+            print(f"    ✗ aztfexport not found. Make sure it's installed and in PATH")
+            print(f"    💡 Install with: go install github.com/Azure/aztfexport@latest")
             return False
         except Exception as e:
             print(f"    ✗ Error exporting {resource_group}: {str(e)}")
