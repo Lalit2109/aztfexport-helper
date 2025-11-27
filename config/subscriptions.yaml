@@ -57,17 +57,18 @@ aztfexport:
   # Example: ["/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.xxx/xxx"]
   exclude_resources: []
   
-  # Resource types to exclude (all resources of these types will be excluded)
-  # Example: ["Microsoft.Insights/components", "Microsoft.OperationalInsights/workspaces"]
-  # Note: This will query Azure to find all resources of these types and exclude them
-  # 
-  # For nested/child resources, use the full path format:
-  # - "Microsoft.OperationalInsights/workspaces/savedSearches"  # Saved searches (nested)
-  # - "Microsoft.Storage/storageAccounts/blobServices"          # Blob services (nested)
-  # - "Microsoft.Compute/virtualMachines/extensions"            # VM extensions (nested)
-  # The tool automatically detects nested resources (format: Provider/ResourceType/ChildType)
-  # and queries them properly by finding parent resources first
+  # Resource types to exclude using Azure Resource Graph query mode
+  # When specified, aztfexport will use query mode to exclude these resource types
+  # Example: ["Microsoft.Insights/components", "Microsoft.OperationalInsights/workspaces/savedSearches"]
+  # Note: This uses Azure Resource Graph queries (more efficient than --exclude flags)
+  # For nested resources, use the full path: "Microsoft.OperationalInsights/workspaces/savedSearches"
   exclude_resource_types: []
+  
+  # Custom Azure Resource Graph query (optional, overrides exclude_resource_types)
+  # If provided, this query will be used directly in aztfexport query mode
+  # Example: "type != 'Microsoft.OperationalInsights/workspaces/savedSearches' and type != 'Microsoft.Insights/components'"
+  # Leave empty to auto-generate query from exclude_resource_types
+  query: null
   
   # Additional aztfexport flags
   # Example: ["--parallelism", "5"]
