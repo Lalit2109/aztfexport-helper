@@ -310,7 +310,8 @@ class ExportManager:
         print(f"Subscription ID: {subscription_id}")
         print(f"{'='*60}")
         
-        # Create subscription directory
+        # Create subscription directory under base_dir
+        # Structure: {base_dir}/{subscription-name}/
         sub_dir = Path(self.base_dir) / self._sanitize_name(subscription_name)
         sub_dir.mkdir(parents=True, exist_ok=True)
         

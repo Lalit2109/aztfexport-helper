@@ -79,10 +79,15 @@ azure_devops:
   
 # Output configuration
 output:
-  # Base directory for exports (relative to workspace)
+  # Base directory for exports (relative to workspace or absolute path)
+  # Folder structure will be: {base_dir}/{subscription-name}/{resource-group-name}/
+  # Default: "./exports"
   base_dir: "./exports"
   
-  # Whether to create resource group subfolders
+  # Whether to create resource group subfolders under subscription folder
+  # If true: {base_dir}/{subscription-name}/{resource-group-name}/
+  # If false: {base_dir}/{subscription-name}/ (all resources in subscription folder)
+  # Default: true
   create_rg_folders: true
   
   # Whether to initialize git repos locally
