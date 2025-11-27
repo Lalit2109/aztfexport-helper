@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import yaml
+import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -41,57 +42,55 @@ def main():
     print("=" * 70)
     print()
     
-    # Check available authentication methods
-    print("Checking Azure authentication...")
-    auth_method = None
-    account_info = None
+    # Initialize export manager (this will find Azure CLI path)
+    export_manager = ExportManager(config_path)
     
-    # Try to detect which authentication method will be used
+    # Verify Azure CLI authentication using the path found by ExportManager
+    print("Checking Azure CLI authentication...")
+    az_cli_path = export_manager.az_cli_path
+    
+    if az_cli_path != 'az' and not os.path.exists(az_cli_path):
+        print(f"✗ Azure CLI not found at expected path: {az_cli_path}")
+        print("  Please ensure Azure CLI is installed and in your PATH")
+        sys.exit(1)
+    
     try:
-        import subprocess
         # Check if Azure CLI is available and logged in
         result = subprocess.run(
-            ['az', 'account', 'show'],
+            [az_cli_path, 'account', 'show'],
             capture_output=True,
             text=True,
             timeout=5
         )
         if result.returncode == 0:
-            auth_method = "Azure CLI"
             account_info = subprocess.run(
-                ['az', 'account', 'show', '--query', '{name:name, id:id}', '-o', 'json'],
+                [az_cli_path, 'account', 'show', '--query', '{name:name, id:id}', '-o', 'json'],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
             if account_info.returncode == 0:
-                import json
                 account = json.loads(account_info.stdout)
-                print(f"✓ Will use Azure CLI credentials")
+                print(f"✓ Azure CLI is authenticated")
                 print(f"  Account: {account.get('name', 'N/A')}")
                 print(f"  Subscription ID: {account.get('id', 'N/A')}")
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        # Azure CLI not available, will try other methods
-        pass
-    except Exception:
-        pass
-    
-    # Check for service principal environment variables
-    if not auth_method:
-        if os.getenv('AZURE_CLIENT_ID') and os.getenv('AZURE_CLIENT_SECRET') and os.getenv('AZURE_TENANT_ID'):
-            auth_method = "Service Principal (from environment variables)"
-            print(f"✓ Will use Service Principal credentials from environment variables")
-            print(f"  Client ID: {os.getenv('AZURE_CLIENT_ID')[:8]}...")
+            else:
+                print("⚠️  Could not get account information")
         else:
-            # DefaultAzureCredential will try multiple methods automatically
-            auth_method = "DefaultAzureCredential (automatic detection)"
-            print(f"✓ Will use DefaultAzureCredential - automatically detecting available credentials")
-            print(f"  This will try: Azure CLI → Managed Identity → Environment Variables → etc.")
+            print("✗ Not logged in to Azure CLI")
+            print("  Please run: az login")
+            sys.exit(1)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        print("✗ Azure CLI not found")
+        print("  Please install Azure CLI: https://docs.microsoft.com/cli/azure/install-azure-cli")
+        sys.exit(1)
+    except Exception as e:
+        print(f"⚠️  Error checking Azure CLI: {str(e)}")
+        print("  Continuing anyway...")
     
     print()
     
-    # Initialize managers
-    export_manager = ExportManager(config_path)
+    # Initialize git manager
     git_manager = GitManager(export_manager.base_dir)
     
     # Step 1: Export resources

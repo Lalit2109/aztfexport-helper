@@ -45,6 +45,9 @@ azure_devops:
   project: "your-project"
   # Service connection name for Azure authentication
   service_connection: "Azure-ServiceConnection"
+
+# Note: This tool uses Azure CLI (az) for all Azure operations
+# Azure CLI handles SSL certificates automatically, so no SSL configuration needed
   
 # Output configuration
 output:

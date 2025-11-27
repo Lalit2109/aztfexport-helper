@@ -4,13 +4,13 @@ Uses aztfexport to export resources organized by subscription and resource group
 """
 
 import os
+import platform
 import subprocess
+import shutil
 import yaml
 import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from azure.identity import DefaultAzureCredential
-from azure.mgmt.resource import ResourceManagementClient
 
 
 class ExportManager:
@@ -19,59 +19,52 @@ class ExportManager:
     def __init__(self, config_path: str = "config/subscriptions.yaml"):
         """Initialize the export manager"""
         self.config = self._load_config(config_path)
-        self.credential = self._get_credential()
         self.base_dir = self.config.get('output', {}).get('base_dir', './exports')
+        # Find Azure CLI path
+        self.az_cli_path = self._find_az_cli()
+    
+    def _find_az_cli(self) -> str:
+        """Find Azure CLI executable path (cross-platform)"""
+        # First, try to find az in PATH (works on all platforms)
+        az_path = shutil.which('az')
+        if az_path:
+            return az_path
+        
+        # Platform-specific common installation paths
+        system = platform.system()
+        
+        if system == 'Windows':
+            common_paths = [
+                os.path.expanduser('~\\AppData\\Local\\Programs\\Azure CLI\\az.exe'),
+                'C:\\Program Files\\Microsoft SDKs\\Azure\\CLI2\\wbin\\az.exe',
+                'C:\\Program Files (x86)\\Microsoft SDKs\\Azure\\CLI2\\wbin\\az.exe',
+            ]
+        elif system == 'Darwin':  # macOS
+            common_paths = [
+                '/opt/homebrew/bin/az',  # Homebrew on Apple Silicon
+                '/usr/local/bin/az',      # Homebrew on Intel Mac
+                '/usr/bin/az',            # System installation
+            ]
+        else:  # Linux and other Unix-like
+            common_paths = [
+                '/usr/bin/az',
+                '/usr/local/bin/az',
+                '/opt/az/bin/az',
+            ]
+        
+        for path in common_paths:
+            if os.path.exists(path):
+                return path
+        
+        # If not found, return 'az' and let subprocess handle it
+        # This will work if az is in PATH when subprocess runs
+        return 'az'
         
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
         with open(config_path, 'r') as f:
             return yaml.safe_load(f)
     
-    def _get_credential(self):
-        """Get Azure credentials - automatically detects and uses available credentials"""
-        # DefaultAzureCredential automatically tries multiple authentication methods in order:
-        # 1. Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
-        # 2. Managed Identity (if running on Azure VM/App Service)
-        # 3. Azure CLI (az login) - most common for local execution
-        # 4. Azure PowerShell
-        # 5. Azure Developer CLI (azd)
-        # 6. Visual Studio Code
-        # 7. Azure CLI (legacy)
-        
-        # This will automatically use the first available method
-        credential = DefaultAzureCredential()
-        
-        # Try to detect which method will be used (for informational purposes)
-        try:
-            # Check Azure CLI first (most common for local)
-            result = subprocess.run(
-                ['az', 'account', 'show'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                account_info = subprocess.run(
-                    ['az', 'account', 'show', '--query', '{name:name, id:id}', '-o', 'json'],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                if account_info.returncode == 0:
-                    account = json.loads(account_info.stdout)
-                    print(f"  → Detected Azure CLI credentials")
-                    print(f"    Account: {account.get('name', 'N/A')}")
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            # Azure CLI not available - will try other methods automatically
-            pass
-        except Exception:
-            pass
-        
-        # Check for service principal in environment
-        if os.getenv('AZURE_CLIENT_ID') and os.getenv('AZURE_CLIENT_SECRET'):
-            print(f"  → Detected Service Principal credentials in environment")
-        
-        return credential
     
     def _check_aztfexport_installed(self) -> bool:
         """Check if aztfexport is installed"""
@@ -110,23 +103,44 @@ class ExportManager:
             raise
     
     def _get_resource_groups(self, subscription_id: str) -> List[str]:
-        """Get list of resource groups in a subscription"""
-        resource_client = ResourceManagementClient(
-            self.credential,
-            subscription_id
-        )
-        
+        """Get list of resource groups in a subscription using Azure CLI"""
         resource_groups = []
         exclude_rgs = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
         
         try:
-            for rg in resource_client.resource_groups.list():
-                if rg.name not in exclude_rgs:
-                    resource_groups.append(rg.name)
+            result = subprocess.run(
+                [self.az_cli_path, 'group', 'list', '--subscription', subscription_id, '--output', 'json'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True
+            )
+            
+            rgs_data = json.loads(result.stdout)
+            for rg in rgs_data:
+                rg_name = rg.get('name', '')
+                if rg_name and rg_name not in exclude_rgs:
+                    resource_groups.append(rg_name)
+            
+            print(f"  ✓ Found {len(resource_groups)} resource groups")
+            return resource_groups
+            
+        except subprocess.TimeoutExpired:
+            print(f"  ✗ Timeout listing resource groups (exceeded 30 seconds)")
+            return []
+        except FileNotFoundError:
+            print(f"  ✗ Azure CLI not found. Please install: https://docs.microsoft.com/cli/azure/install-azure-cli")
+            return []
+        except subprocess.CalledProcessError as e:
+            print(f"  ✗ Azure CLI command failed: {e.stderr}")
+            print(f"  💡 Make sure you're logged in: az login")
+            return []
+        except json.JSONDecodeError as e:
+            print(f"  ✗ Failed to parse Azure CLI output: {str(e)}")
+            return []
         except Exception as e:
-            print(f"  Error listing resource groups: {str(e)}")
-        
-        return resource_groups
+            print(f"  ✗ Error listing resource groups: {str(e)}")
+            return []
     
     def _export_resource_group(
         self,
