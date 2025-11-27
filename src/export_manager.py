@@ -244,13 +244,40 @@ class ExportManager:
             
             if result.returncode == 0:
                 # Check if files were actually created
-                tf_files = list(output_path.glob('*.tf'))
+                # aztfexport might create files directly in output_path or in a subdirectory
+                # Check both the specified directory and recursively
+                tf_files_direct = list(output_path.glob('*.tf'))
+                tf_files_recursive = list(output_path.rglob('*.tf'))
+                
+                # Use recursive search to find all .tf files
+                tf_files = tf_files_recursive if tf_files_recursive else tf_files_direct
+                
                 if tf_files:
+                    # Get the actual directory where files were created
+                    actual_dir = tf_files[0].parent
                     print(f"    ✓ Successfully exported {resource_group}")
                     print(f"      Created {len(tf_files)} Terraform file(s)")
+                    if actual_dir != output_path:
+                        print(f"      Files created in: {actual_dir}")
                     return True
                 else:
-                    print(f"    ⚠️  Command succeeded but no .tf files found in {output_path}")
+                    # Show what's actually in the directory for debugging
+                    if output_path.exists():
+                        all_files = list(output_path.iterdir())
+                        print(f"    ⚠️  Command succeeded but no .tf files found")
+                        print(f"    Checking directory: {output_path}")
+                        print(f"    Directory exists: {output_path.exists()}")
+                        if all_files:
+                            print(f"    Found {len(all_files)} item(s) in directory:")
+                            for item in all_files[:5]:  # Show first 5 items
+                                item_type = "directory" if item.is_dir() else "file"
+                                print(f"      - {item.name} ({item_type})")
+                            if len(all_files) > 5:
+                                print(f"      ... and {len(all_files) - 5} more")
+                        else:
+                            print(f"    Directory is empty")
+                    else:
+                        print(f"    ⚠️  Command succeeded but output directory does not exist: {output_path}")
                     print(f"    💡 Check if the resource group has exportable resources")
                     return False
             else:
