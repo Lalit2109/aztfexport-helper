@@ -237,20 +237,23 @@ class ExportManager:
                     print(f"    Excluding types: {', '.join(exclude_resource_types)}")
                 print(f"    Query: {query}")
                 
-                # aztfexport query mode syntax: aztfexport query -n "<query>" --resource-group <rg> [flags]
+                # aztfexport query mode syntax: aztfexport query [flags] -n "<query>" <resource-group-name>
+                # Resource group name MUST be last (similar to resource-group mode)
                 cmd = [
                     'aztfexport',
                     'query',
-                    '-n', query,  # Query string using Azure Resource Graph syntax
                     '--subscription-id', subscription_id,
-                    '--resource-group', rg_name,
                     '--output-dir', str(output_path),
-                    '--non-interactive'
+                    '--non-interactive',
+                    '-n', query  # Query string using Azure Resource Graph syntax
                 ]
                 
                 # Add additional flags if specified
                 additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
                 cmd.extend(additional_flags)
+                
+                # Resource group name MUST be last (per aztfexport documentation)
+                cmd.append(rg_name)
             else:
                 # Fall back to resource-group mode if query is empty
                 use_query_mode = False
