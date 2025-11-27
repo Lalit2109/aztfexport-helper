@@ -4,7 +4,9 @@ Uses aztfexport to export resources organized by subscription and resource group
 """
 
 import os
+import platform
 import subprocess
+import shutil
 import yaml
 import json
 from pathlib import Path
@@ -18,6 +20,45 @@ class ExportManager:
         """Initialize the export manager"""
         self.config = self._load_config(config_path)
         self.base_dir = self.config.get('output', {}).get('base_dir', './exports')
+        # Find Azure CLI path
+        self.az_cli_path = self._find_az_cli()
+    
+    def _find_az_cli(self) -> str:
+        """Find Azure CLI executable path (cross-platform)"""
+        # First, try to find az in PATH (works on all platforms)
+        az_path = shutil.which('az')
+        if az_path:
+            return az_path
+        
+        # Platform-specific common installation paths
+        system = platform.system()
+        
+        if system == 'Windows':
+            common_paths = [
+                os.path.expanduser('~\\AppData\\Local\\Programs\\Azure CLI\\az.exe'),
+                'C:\\Program Files\\Microsoft SDKs\\Azure\\CLI2\\wbin\\az.exe',
+                'C:\\Program Files (x86)\\Microsoft SDKs\\Azure\\CLI2\\wbin\\az.exe',
+            ]
+        elif system == 'Darwin':  # macOS
+            common_paths = [
+                '/opt/homebrew/bin/az',  # Homebrew on Apple Silicon
+                '/usr/local/bin/az',      # Homebrew on Intel Mac
+                '/usr/bin/az',            # System installation
+            ]
+        else:  # Linux and other Unix-like
+            common_paths = [
+                '/usr/bin/az',
+                '/usr/local/bin/az',
+                '/opt/az/bin/az',
+            ]
+        
+        for path in common_paths:
+            if os.path.exists(path):
+                return path
+        
+        # If not found, return 'az' and let subprocess handle it
+        # This will work if az is in PATH when subprocess runs
+        return 'az'
         
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -68,7 +109,7 @@ class ExportManager:
         
         try:
             result = subprocess.run(
-                ['az', 'group', 'list', '--subscription', subscription_id, '--output', 'json'],
+                [self.az_cli_path, 'group', 'list', '--subscription', subscription_id, '--output', 'json'],
                 capture_output=True,
                 text=True,
                 timeout=30,

@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import yaml
+import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -41,20 +42,29 @@ def main():
     print("=" * 70)
     print()
     
-    # Verify Azure CLI authentication
+    # Initialize export manager (this will find Azure CLI path)
+    export_manager = ExportManager(config_path)
+    
+    # Verify Azure CLI authentication using the path found by ExportManager
     print("Checking Azure CLI authentication...")
+    az_cli_path = export_manager.az_cli_path
+    
+    if az_cli_path != 'az' and not os.path.exists(az_cli_path):
+        print(f"✗ Azure CLI not found at expected path: {az_cli_path}")
+        print("  Please ensure Azure CLI is installed and in your PATH")
+        sys.exit(1)
+    
     try:
-        import subprocess
         # Check if Azure CLI is available and logged in
         result = subprocess.run(
-            ['az', 'account', 'show'],
+            [az_cli_path, 'account', 'show'],
             capture_output=True,
             text=True,
             timeout=5
         )
         if result.returncode == 0:
             account_info = subprocess.run(
-                ['az', 'account', 'show', '--query', '{name:name, id:id}', '-o', 'json'],
+                [az_cli_path, 'account', 'show', '--query', '{name:name, id:id}', '-o', 'json'],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -80,8 +90,7 @@ def main():
     
     print()
     
-    # Initialize managers
-    export_manager = ExportManager(config_path)
+    # Initialize git manager
     git_manager = GitManager(export_manager.base_dir)
     
     # Step 1: Export resources
