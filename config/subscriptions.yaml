@@ -60,6 +60,13 @@ aztfexport:
   # Resource types to exclude (all resources of these types will be excluded)
   # Example: ["Microsoft.Insights/components", "Microsoft.OperationalInsights/workspaces"]
   # Note: This will query Azure to find all resources of these types and exclude them
+  # 
+  # For nested/child resources, use the full path format:
+  # - "Microsoft.OperationalInsights/workspaces/savedSearches"  # Saved searches (nested)
+  # - "Microsoft.Storage/storageAccounts/blobServices"          # Blob services (nested)
+  # - "Microsoft.Compute/virtualMachines/extensions"            # VM extensions (nested)
+  # The tool automatically detects nested resources (format: Provider/ResourceType/ChildType)
+  # and queries them properly by finding parent resources first
   exclude_resource_types: []
   
   # Additional aztfexport flags

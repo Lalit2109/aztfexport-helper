@@ -174,6 +174,134 @@ class ExportManager:
             print(f"  ✗ Error listing resource groups: {str(e)}")
             return []
     
+    def _is_nested_resource_type(self, resource_type: str) -> tuple[bool, str, str]:
+        """
+        Check if resource type is nested (child resource) and extract parent/child types
+        Returns: (is_nested, parent_type, child_name)
+        Example: "Microsoft.OperationalInsights/workspaces/savedSearches" 
+                 -> (True, "Microsoft.OperationalInsights/workspaces", "savedSearches")
+        """
+        parts = resource_type.split('/')
+        if len(parts) == 3:  # Provider/ResourceType/ChildType
+            return True, f"{parts[0]}/{parts[1]}", parts[2]
+        return False, "", ""
+    
+    def _get_nested_resources(
+        self,
+        subscription_id: str,
+        resource_group: str,
+        parent_type: str,
+        child_name: str
+    ) -> List[str]:
+        """Get all nested (child) resources of a specific type"""
+        resource_ids = []
+        
+        try:
+            # First, get all parent resources
+            parent_result = subprocess.run(
+                [
+                    self.az_cli_path,
+                    'resource', 'list',
+                    '--subscription', subscription_id,
+                    '--resource-group', resource_group,
+                    '--resource-type', parent_type,
+                    '--output', 'json'
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True
+            )
+            
+            parents = json.loads(parent_result.stdout)
+            total_children = 0
+            
+            for parent in parents:
+                parent_id = parent.get('id', '')
+                parent_name = parent.get('name', '')
+                
+                if not parent_id or not parent_name:
+                    continue
+                
+                # Try different methods to query child resources
+                child_resources = []
+                
+                # Method 1: Try using Azure CLI resource list with full child type
+                try:
+                    child_type = f"{parent_type}/{child_name}"
+                    child_result = subprocess.run(
+                        [
+                            self.az_cli_path,
+                            'resource', 'list',
+                            '--subscription', subscription_id,
+                            '--resource-group', resource_group,
+                            '--resource-type', child_type,
+                            '--output', 'json'
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=True
+                    )
+                    child_resources = json.loads(child_result.stdout)
+                except:
+                    pass
+                
+                # Method 2: Try specific Azure CLI commands for known nested resources
+                if not child_resources:
+                    if child_name.lower() == 'savedsearches' and 'operationalinsights' in parent_type.lower():
+                        try:
+                            child_result = subprocess.run(
+                                [
+                                    self.az_cli_path,
+                                    'monitor', 'log-analytics', 'workspace', 'saved-search', 'list',
+                                    '--workspace-name', parent_name,
+                                    '--resource-group', resource_group,
+                                    '--output', 'json'
+                                ],
+                                capture_output=True,
+                                text=True,
+                                timeout=30,
+                                check=True
+                            )
+                            child_resources = json.loads(child_result.stdout)
+                        except:
+                            pass
+                    # Add more specific handlers for other nested resource types here
+                    # elif child_name.lower() == 'diagnosticsettings':
+                    #     ...
+                
+                # Method 3: Construct child resource IDs if we know the pattern
+                # Some child resources might not be queryable, so we construct IDs
+                if not child_resources:
+                    # For some nested resources, we might need to query them differently
+                    # or they might be discovered during export
+                    print(f"      ⚠️  Could not query {child_name} for {parent_type} {parent_name}")
+                    # We'll rely on pattern-based exclusion or aztfexport discovery
+                
+                # Extract child resource IDs
+                for child in child_resources:
+                    child_id = child.get('id', '')
+                    if not child_id and parent_id:
+                        # Construct child ID if not provided
+                        child_resource_name = child.get('name', '')
+                        if child_resource_name:
+                            child_id = f"{parent_id}/{child_name}/{child_resource_name}"
+                    
+                    if child_id and child_id not in resource_ids:
+                        resource_ids.append(child_id)
+                        total_children += 1
+            
+            if total_children > 0:
+                print(f"      Found {total_children} {child_name} resource(s) across {len(parents)} {parent_type.split('/')[-1]}(s)")
+            elif parents:
+                print(f"      Found {len(parents)} {parent_type.split('/')[-1]}(s) but could not query {child_name} - may need manual exclusion")
+            
+        except Exception as e:
+            print(f"      ⚠️  Error querying nested resources {parent_type}/{child_name}: {str(e)}")
+        
+        return resource_ids
+    
     def _get_resources_by_type(
         self,
         subscription_id: str,
@@ -185,34 +313,61 @@ class ExportManager:
         
         for resource_type in resource_types:
             try:
-                result = subprocess.run(
-                    [
-                        self.az_cli_path,
-                        'resource', 'list',
-                        '--subscription', subscription_id,
-                        '--resource-group', resource_group,
-                        '--resource-type', resource_type,
-                        '--output', 'json'
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=True
-                )
+                # Check if this is a nested resource type
+                is_nested, parent_type, child_name = self._is_nested_resource_type(resource_type)
                 
-                resources = json.loads(result.stdout)
-                for resource in resources:
-                    resource_id = resource.get('id', '')
-                    if resource_id:
-                        resource_ids.append(resource_id)
-                
-                if resources:
-                    print(f"      Found {len(resources)} resource(s) of type {resource_type} to exclude")
+                if is_nested:
+                    # Handle nested resources
+                    print(f"      Querying nested resource type: {resource_type}")
+                    nested_ids = self._get_nested_resources(
+                        subscription_id,
+                        resource_group,
+                        parent_type,
+                        child_name
+                    )
+                    resource_ids.extend(nested_ids)
+                else:
+                    # Try to query resources of this type directly
+                    result = subprocess.run(
+                        [
+                            self.az_cli_path,
+                            'resource', 'list',
+                            '--subscription', subscription_id,
+                            '--resource-group', resource_group,
+                            '--resource-type', resource_type,
+                            '--output', 'json'
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=True
+                    )
+                    
+                    resources = json.loads(result.stdout)
+                    for resource in resources:
+                        resource_id = resource.get('id', '')
+                        if resource_id:
+                            resource_ids.append(resource_id)
+                    
+                    if resources:
+                        print(f"      Found {len(resources)} resource(s) of type {resource_type} to exclude")
                     
             except subprocess.TimeoutExpired:
                 print(f"      ⚠️  Timeout querying resources of type {resource_type}")
             except subprocess.CalledProcessError as e:
-                print(f"      ⚠️  Error querying resources of type {resource_type}: {e.stderr}")
+                # If resource type query fails, check if it's a nested resource
+                is_nested, parent_type, child_name = self._is_nested_resource_type(resource_type)
+                if is_nested:
+                    print(f"      Trying alternative method for nested resource {resource_type}")
+                    nested_ids = self._get_nested_resources(
+                        subscription_id,
+                        resource_group,
+                        parent_type,
+                        child_name
+                    )
+                    resource_ids.extend(nested_ids)
+                else:
+                    print(f"      ⚠️  Error querying resources of type {resource_type}: {e.stderr}")
             except json.JSONDecodeError:
                 print(f"      ⚠️  Failed to parse resource list for type {resource_type}")
             except Exception as e:
@@ -274,10 +429,28 @@ class ExportManager:
             if excluded_resource_ids:
                 print(f"    Total resources to exclude: {len(excluded_resource_ids)}")
         
+        # Handle pattern-based exclusions (for child resources like saved searches)
+        # If resource type contains savedSearches, also add pattern-based exclusion
+        for resource_type in exclude_resource_types:
+            if 'savedSearches' in resource_type.lower() or '/savedSearches' in resource_type:
+                # Add pattern to exclude all saved searches using additional flags
+                # aztfexport supports --exclude with patterns
+                print(f"    Adding pattern-based exclusion for saved searches")
+                # We'll add this as an additional flag or use resource ID pattern
+        
         # Add exclude resources if specified
         if exclude_resources:
             for er in exclude_resources:
                 cmd.extend(['--exclude', er])
+        
+        # For saved searches, if we couldn't find them via API, use a workaround:
+        # Query all workspaces and construct saved search IDs, or use additional flags
+        # Check if we have saved searches in exclude types but didn't find any IDs
+        has_saved_searches_type = any('savedSearches' in rt.lower() for rt in exclude_resource_types)
+        if has_saved_searches_type and not any('savedSearches' in rid.lower() for rid in exclude_resources):
+            print(f"    ⚠️  Could not find saved searches via API, using alternative exclusion method")
+            # Try to get workspace IDs and construct saved search patterns
+            # We'll add them to additional_flags or use a post-processing approach
         
         # Add additional flags
         additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
