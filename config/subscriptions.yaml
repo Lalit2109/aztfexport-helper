@@ -1,0 +1,68 @@
+# Azure Subscriptions Configuration
+# Configure your 35 subscriptions here
+
+subscriptions:
+  - id: "subscription-id-1"
+    name: "Production Subscription 1"
+    environment: "prod"
+    repo_name: "terraform-prod-sub-1"
+    repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"
+    export_enabled: true
+    
+  - id: "subscription-id-2"
+    name: "Development Subscription 1"
+    environment: "dev"
+    repo_name: "terraform-dev-sub-1"
+    repo_url: "https://dev.azure.com/org/project/_git/terraform-dev-sub-1"
+    export_enabled: true
+    
+  # Add remaining 33 subscriptions here
+  # Template:
+  # - id: "subscription-id-X"
+  #   name: "Subscription Name"
+  #   environment: "prod|dev|staging"
+  #   repo_name: "terraform-{environment}-sub-X"
+  #   repo_url: "https://dev.azure.com/org/project/_git/terraform-{environment}-sub-X"
+  #   export_enabled: true|false
+
+# aztfexport configuration
+aztfexport:
+  # Resource types to export (empty = export all)
+  resource_types: []
+  
+  # Resource groups to exclude
+  exclude_resource_groups: []
+  
+  # Resources to exclude (by ID pattern)
+  exclude_resources: []
+  
+  # Additional aztfexport flags
+  additional_flags: []
+
+# Azure DevOps configuration
+azure_devops:
+  organization: "your-org"
+  project: "your-project"
+  # Service connection name for Azure authentication
+  service_connection: "Azure-ServiceConnection"
+  
+# Output configuration
+output:
+  # Base directory for exports (relative to workspace)
+  base_dir: "./exports"
+  
+  # Whether to create resource group subfolders
+  create_rg_folders: true
+  
+  # Whether to initialize git repos locally
+  init_git_repos: false
+
+# Git push configuration
+git:
+  # Enable pushing to repositories (set to true after verifying exports)
+  # Default: false - exports only, no git push
+  push_to_repos: false
+  
+  # Branch to push to (default: main)
+  branch: "main"
+
