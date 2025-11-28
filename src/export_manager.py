@@ -12,6 +12,7 @@ import yaml
 import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+from logger import get_logger
 
 
 class ExportManager:
@@ -19,34 +20,38 @@ class ExportManager:
     
     def __init__(self, config_path: str = "config/subscriptions.yaml"):
         """Initialize the export manager"""
+        self.logger = get_logger()
         self.config = self._load_config(config_path)
+        
+        # Set log level from config if specified
+        log_level = self.config.get('logging', {}).get('level', os.getenv('LOG_LEVEL', 'INFO'))
+        from logger import set_log_level
+        set_log_level(log_level)
+        self.logger = get_logger()
+        
         self.base_dir = self.config.get('output', {}).get('base_dir', './exports')
-        # Find Azure CLI path
         self.az_cli_path = self._find_az_cli()
     
     def _find_az_cli(self) -> str:
         """Find Azure CLI executable path (cross-platform)"""
-        # First, try to find az in PATH (works on all platforms)
         az_path = shutil.which('az')
         if az_path:
             return az_path
         
-        # Platform-specific common installation paths
         system = platform.system()
-        
         if system == 'Windows':
             common_paths = [
                 os.path.expanduser('~\\AppData\\Local\\Programs\\Azure CLI\\az.exe'),
                 'C:\\Program Files\\Microsoft SDKs\\Azure\\CLI2\\wbin\\az.exe',
                 'C:\\Program Files (x86)\\Microsoft SDKs\\Azure\\CLI2\\wbin\\az.exe',
             ]
-        elif system == 'Darwin':  # macOS
+        elif system == 'Darwin':
             common_paths = [
-                '/opt/homebrew/bin/az',  # Homebrew on Apple Silicon
-                '/usr/local/bin/az',      # Homebrew on Intel Mac
-                '/usr/bin/az',            # System installation
+                '/opt/homebrew/bin/az',
+                '/usr/local/bin/az',
+                '/usr/bin/az',
             ]
-        else:  # Linux and other Unix-like
+        else:
             common_paths = [
                 '/usr/bin/az',
                 '/usr/local/bin/az',
@@ -57,18 +62,12 @@ class ExportManager:
             if os.path.exists(path):
                 return path
         
-        # If not found, return 'az' and let subprocess handle it
-        # This will work if az is in PATH when subprocess runs
         return 'az'
     
     def _matches_exclude_pattern(self, rg_name: str, exclude_patterns: List[str]) -> bool:
         """Check if resource group name matches any exclude pattern (supports wildcards)"""
         for pattern in exclude_patterns:
-            # Exact match
-            if rg_name == pattern:
-                return True
-            # Wildcard match (supports * and ?)
-            if fnmatch.fnmatch(rg_name, pattern):
+            if rg_name == pattern or fnmatch.fnmatch(rg_name, pattern):
                 return True
         return False
         
@@ -94,35 +93,28 @@ class ExportManager:
     def _install_aztfexport(self):
         """Install aztfexport if not present"""
         if self._check_aztfexport_installed():
-            print("✓ aztfexport is already installed")
+            self.logger.success("aztfexport is already installed")
             return
         
-        print("Installing aztfexport...")
+        self.logger.info("Installing aztfexport...")
         try:
-            # Try to install via go install or download binary
-            # aztfexport is typically installed via: go install github.com/Azure/aztfexport@latest
-            # Or download from releases
             subprocess.run(
                 ['go', 'install', 'github.com/Azure/aztfexport@latest'],
                 check=True
             )
-            print("✓ aztfexport installed successfully")
+            self.logger.success("aztfexport installed successfully")
         except (subprocess.CalledProcessError, FileNotFoundError):
-            print("⚠️  Could not install aztfexport automatically")
-            print("Please install manually:")
-            print("  Option 1: go install github.com/Azure/aztfexport@latest")
-            print("  Option 2: Download from https://github.com/Azure/aztfexport/releases")
+            self.logger.error("Could not install aztfexport automatically")
+            self.logger.info("Please install manually:")
+            self.logger.info("  Option 1: go install github.com/Azure/aztfexport@latest")
+            self.logger.info("  Option 2: Download from https://github.com/Azure/aztfexport/releases")
             raise
     
     def _get_resource_groups(self, subscription_id: str) -> List[str]:
         """Get list of resource groups in a subscription using Azure CLI"""
         resource_groups = []
-        
-        # Get global exclude patterns (with wildcard support)
         global_excludes = self.config.get('global_excludes', {}).get('resource_groups', [])
-        # Get subscription-specific excludes
         local_excludes = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
-        # Combine both lists
         exclude_patterns = global_excludes + local_excludes
         
         try:
@@ -138,87 +130,58 @@ class ExportManager:
             excluded_count = 0
             
             for rg in rgs_data:
-                rg_name = rg.get('name', '').strip()  # Strip whitespace
+                rg_name = rg.get('name', '').strip()
                 if rg_name:
-                    # Check if it matches any exclude pattern (with wildcard support)
                     if self._matches_exclude_pattern(rg_name, exclude_patterns):
                         excluded_count += 1
                         continue
                     
-                    # Ensure it's a single resource group name (not a list or multiple values)
                     if isinstance(rg_name, str) and rg_name:
                         resource_groups.append(rg_name)
                     else:
-                        print(f"  ⚠️  Skipping invalid resource group name: {rg_name}")
+                        self.logger.warning(f"Skipping invalid resource group name: {rg_name}")
             
             if excluded_count > 0:
-                print(f"  ✓ Found {len(resource_groups)} resource groups (excluded {excluded_count} matching patterns)")
+                self.logger.success(f"Found {len(resource_groups)} resource groups (excluded {excluded_count} matching patterns)")
             else:
-                print(f"  ✓ Found {len(resource_groups)} resource groups")
+                self.logger.success(f"Found {len(resource_groups)} resource groups")
             return resource_groups
             
         except subprocess.TimeoutExpired:
-            print(f"  ✗ Timeout listing resource groups (exceeded 30 seconds)")
+            self.logger.error("Timeout listing resource groups (exceeded 30 seconds)")
             return []
         except FileNotFoundError:
-            print(f"  ✗ Azure CLI not found. Please install: https://docs.microsoft.com/cli/azure/install-azure-cli")
+            self.logger.error("Azure CLI not found. Please install: https://docs.microsoft.com/cli/azure/install-azure-cli")
             return []
         except subprocess.CalledProcessError as e:
-            print(f"  ✗ Azure CLI command failed: {e.stderr}")
-            print(f"  💡 Make sure you're logged in: az login")
+            self.logger.error(f"Azure CLI command failed: {e.stderr}")
+            self.logger.info("Make sure you're logged in: az login")
             return []
         except json.JSONDecodeError as e:
-            print(f"  ✗ Failed to parse Azure CLI output: {str(e)}")
+            self.logger.error(f"Failed to parse Azure CLI output: {str(e)}")
             return []
         except Exception as e:
-            print(f"  ✗ Error listing resource groups: {str(e)}")
+            self.logger.error(f"Error listing resource groups: {str(e)}")
             return []
     
-    def _get_resources_by_type(
+    def _build_resource_graph_query(
         self,
-        subscription_id: str,
-        resource_group: str,
-        resource_types: List[str]
-    ) -> List[str]:
-        """Get all resource IDs of specified types in a resource group"""
-        resource_ids = []
+        exclude_resource_types: List[str],
+        custom_query: Optional[str] = None
+    ) -> str:
+        """Build Azure Resource Graph query to exclude resource types"""
+        if custom_query:
+            return custom_query
         
-        for resource_type in resource_types:
-            try:
-                result = subprocess.run(
-                    [
-                        self.az_cli_path,
-                        'resource', 'list',
-                        '--subscription', subscription_id,
-                        '--resource-group', resource_group,
-                        '--resource-type', resource_type,
-                        '--output', 'json'
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=True
-                )
-                
-                resources = json.loads(result.stdout)
-                for resource in resources:
-                    resource_id = resource.get('id', '')
-                    if resource_id:
-                        resource_ids.append(resource_id)
-                
-                if resources:
-                    print(f"      Found {len(resources)} resource(s) of type {resource_type} to exclude")
-                    
-            except subprocess.TimeoutExpired:
-                print(f"      ⚠️  Timeout querying resources of type {resource_type}")
-            except subprocess.CalledProcessError as e:
-                print(f"      ⚠️  Error querying resources of type {resource_type}: {e.stderr}")
-            except json.JSONDecodeError:
-                print(f"      ⚠️  Failed to parse resource list for type {resource_type}")
-            except Exception as e:
-                print(f"      ⚠️  Unexpected error querying {resource_type}: {str(e)}")
+        if not exclude_resource_types:
+            return ""
         
-        return resource_ids
+        conditions = []
+        for resource_type in exclude_resource_types:
+            escaped_type = resource_type.replace("'", "''")
+            conditions.append(f"type != '{escaped_type}'")
+        
+        return " and ".join(conditions)
     
     def _export_resource_group(
         self,
@@ -228,133 +191,123 @@ class ExportManager:
         output_path: Path
     ) -> bool:
         """Export a single resource group using aztfexport"""
-        print(f"    Exporting resource group: {resource_group}")
+        self.logger.info(f"Exporting resource group: {resource_group}")
         
-        # Convert to absolute path to avoid path resolution issues
         output_path = output_path.resolve()
-        
-        # Ensure parent directory exists (aztfexport will create the final directory)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Build aztfexport command
-        # Ensure resource group name is a single string (handle spaces/special chars)
         rg_name = str(resource_group).strip()
         
-        # According to aztfexport documentation, resource group name MUST be LAST
-        # Command structure: aztfexport resource-group [flags] <resource-group-name>
-        # Use absolute path to avoid path resolution issues
-        cmd = [
-            'aztfexport',
-            'resource-group',
-            '--subscription-id', subscription_id,
-            '--output-dir', str(output_path),
-            '--non-interactive'
-            # Note: --verbose is not a valid flag for aztfexport
-        ]
-        
-        # Add resource type filters if specified
-        resource_types = self.config.get('aztfexport', {}).get('resource_types', [])
-        if resource_types:
-            for rt in resource_types:
-                cmd.extend(['--resource-type', rt])
-        
-        # Get exclude resources list
-        exclude_resources = list(self.config.get('aztfexport', {}).get('exclude_resources', []))
-        
-        # If exclude_resource_types is specified, get all resources of those types and add to exclude list
         exclude_resource_types = self.config.get('aztfexport', {}).get('exclude_resource_types', [])
-        if exclude_resource_types:
-            print(f"    Excluding resource types: {', '.join(exclude_resource_types)}")
-            excluded_resource_ids = self._get_resources_by_type(
-                subscription_id,
-                resource_group,
-                exclude_resource_types
-            )
-            exclude_resources.extend(excluded_resource_ids)
-            if excluded_resource_ids:
-                print(f"    Total resources to exclude: {len(excluded_resource_ids)}")
+        custom_query = self.config.get('aztfexport', {}).get('query', None)
+        use_query_mode = bool(exclude_resource_types) or bool(custom_query)
         
-        # Add exclude resources if specified
-        if exclude_resources:
-            for er in exclude_resources:
-                cmd.extend(['--exclude', er])
+        if use_query_mode:
+            query = self._build_resource_graph_query(exclude_resource_types, custom_query)
+            if query:
+                self.logger.info("Using query mode to exclude resource types")
+                if exclude_resource_types:
+                    self.logger.debug(f"Excluding types: {', '.join(exclude_resource_types)}")
+                self.logger.debug(f"Query: {query}")
+                
+                cmd = [
+                    'aztfexport',
+                    'query',
+                    '--subscription-id', subscription_id,
+                    '--output-dir', str(output_path),
+                    '--non-interactive'
+                ]
+                
+                if rg_name:
+                    query_with_rg = f"{query} and resourceGroup == '{rg_name}'" if query else f"resourceGroup == '{rg_name}'"
+                else:
+                    query_with_rg = query
+                
+                additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
+                cmd.extend(additional_flags)
+                cmd.append(query_with_rg)
+            else:
+                use_query_mode = False
         
-        # Add additional flags
-        additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
-        cmd.extend(additional_flags)
-        
-        # Resource group name MUST be last (per aztfexport documentation)
-        cmd.append(rg_name)
+        if not use_query_mode:
+            cmd = [
+                'aztfexport',
+                'resource-group',
+                '--subscription-id', subscription_id,
+                '--output-dir', str(output_path),
+                '--non-interactive'
+            ]
+            
+            resource_types = self.config.get('aztfexport', {}).get('resource_types', [])
+            if resource_types:
+                for rt in resource_types:
+                    cmd.extend(['--resource-type', rt])
+            
+            exclude_resources = self.config.get('aztfexport', {}).get('exclude_resources', [])
+            if exclude_resources:
+                for er in exclude_resources:
+                    cmd.extend(['--exclude', er])
+            
+            additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
+            cmd.extend(additional_flags)
+            cmd.append(rg_name)
         
         try:
-            # Print command with proper quoting for resource group name
             cmd_display = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in cmd)
-            print(f"    Running command: {cmd_display}")
-            print(f"    Resource group: {rg_name}")
-            print(f"    Output directory: {output_path}")
-            print(f"    This may take several minutes...")
+            self.logger.debug(f"Running command: {cmd_display}")
+            self.logger.debug(f"Resource group: {rg_name}")
+            self.logger.debug(f"Output directory: {output_path}")
+            self.logger.info("This may take several minutes...")
             
-            # Don't capture output - let it stream to console so user can see progress
-            # Use the base directory as cwd to avoid path issues
             result = subprocess.run(
                 cmd,
                 cwd=str(Path(self.base_dir).resolve()),
-                timeout=3600,  # 1 hour timeout
-                # Remove capture_output to see real-time output
+                timeout=3600
             )
             
             if result.returncode == 0:
-                # Check if files were actually created
-                # aztfexport might create files directly in output_path or in a subdirectory
-                # Check both the specified directory and recursively
                 tf_files_direct = list(output_path.glob('*.tf'))
                 tf_files_recursive = list(output_path.rglob('*.tf'))
-                
-                # Use recursive search to find all .tf files
                 tf_files = tf_files_recursive if tf_files_recursive else tf_files_direct
                 
                 if tf_files:
-                    # Get the actual directory where files were created
                     actual_dir = tf_files[0].parent
-                    print(f"    ✓ Successfully exported {resource_group}")
-                    print(f"      Created {len(tf_files)} Terraform file(s)")
+                    self.logger.success(f"Successfully exported {resource_group}")
+                    self.logger.info(f"Created {len(tf_files)} Terraform file(s)")
                     if actual_dir != output_path:
-                        print(f"      Files created in: {actual_dir}")
+                        self.logger.debug(f"Files created in: {actual_dir}")
                     return True
                 else:
-                    # Show what's actually in the directory for debugging
                     if output_path.exists():
                         all_files = list(output_path.iterdir())
-                        print(f"    ⚠️  Command succeeded but no .tf files found")
-                        print(f"    Checking directory: {output_path}")
-                        print(f"    Directory exists: {output_path.exists()}")
+                        self.logger.warning("Command succeeded but no .tf files found")
+                        self.logger.debug(f"Checking directory: {output_path}")
                         if all_files:
-                            print(f"    Found {len(all_files)} item(s) in directory:")
-                            for item in all_files[:5]:  # Show first 5 items
+                            self.logger.debug(f"Found {len(all_files)} item(s) in directory:")
+                            for item in all_files[:5]:
                                 item_type = "directory" if item.is_dir() else "file"
-                                print(f"      - {item.name} ({item_type})")
+                                self.logger.debug(f"  - {item.name} ({item_type})")
                             if len(all_files) > 5:
-                                print(f"      ... and {len(all_files) - 5} more")
+                                self.logger.debug(f"  ... and {len(all_files) - 5} more")
                         else:
-                            print(f"    Directory is empty")
+                            self.logger.debug("Directory is empty")
                     else:
-                        print(f"    ⚠️  Command succeeded but output directory does not exist: {output_path}")
-                    print(f"    💡 Check if the resource group has exportable resources")
+                        self.logger.warning(f"Command succeeded but output directory does not exist: {output_path}")
+                    self.logger.info("Check if the resource group has exportable resources")
                     return False
             else:
-                print(f"    ✗ Error exporting {resource_group} (exit code: {result.returncode})")
-                print(f"    💡 Check the output above for error details")
+                self.logger.error(f"Error exporting {resource_group} (exit code: {result.returncode})")
+                self.logger.info("Check the output above for error details")
                 return False
                 
         except subprocess.TimeoutExpired:
-            print(f"    ✗ Timeout exporting {resource_group} (exceeded 1 hour)")
+            self.logger.error(f"Timeout exporting {resource_group} (exceeded 1 hour)")
             return False
         except FileNotFoundError:
-            print(f"    ✗ aztfexport not found. Make sure it's installed and in PATH")
-            print(f"    💡 Install with: go install github.com/Azure/aztfexport@latest")
+            self.logger.error("aztfexport not found. Make sure it's installed and in PATH")
+            self.logger.info("Install with: go install github.com/Azure/aztfexport@latest")
             return False
         except Exception as e:
-            print(f"    ✗ Error exporting {resource_group}: {str(e)}")
+            self.logger.error(f"Error exporting {resource_group}: {str(e)}")
             return False
     
     def export_subscription(
@@ -366,20 +319,17 @@ class ExportManager:
         subscription_id = subscription['id']
         subscription_name = subscription['name']
         
-        print(f"\n{'='*60}")
-        print(f"Exporting subscription: {subscription_name}")
-        print(f"Subscription ID: {subscription_id}")
-        print(f"{'='*60}")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Exporting subscription: {subscription_name}")
+        self.logger.info(f"Subscription ID: {subscription_id}")
+        self.logger.info("=" * 60)
         
-        # Create subscription directory under base_dir
-        # Structure: {base_dir}/{subscription-name}/
         sub_dir = Path(self.base_dir) / self._sanitize_name(subscription_name)
         sub_dir.mkdir(parents=True, exist_ok=True)
         
-        # Get resource groups
-        print(f"\nDiscovering resource groups...")
+        self.logger.info("Discovering resource groups...")
         resource_groups = self._get_resource_groups(subscription_id)
-        print(f"Found {len(resource_groups)} resource groups")
+        self.logger.info(f"Found {len(resource_groups)} resource groups")
         
         results = {
             'subscription_id': subscription_id,
@@ -391,16 +341,13 @@ class ExportManager:
         }
         
         if not resource_groups:
-            print("No resource groups to export")
+            self.logger.info("No resource groups to export")
             return results
         
-        # Export each resource group
         for rg in resource_groups:
             if create_rg_folders:
-                # Create resource group subfolder
                 rg_dir = sub_dir / self._sanitize_name(rg)
             else:
-                # Export directly to subscription folder
                 rg_dir = sub_dir
             
             success = self._export_resource_group(
@@ -423,39 +370,35 @@ class ExportManager:
                 }
                 results['failed_rgs'] += 1
         
-        print(f"\n✓ Export completed for {subscription_name}")
-        print(f"  Successful: {results['successful_rgs']}/{results['total_rgs']}")
-        print(f"  Failed: {results['failed_rgs']}/{results['total_rgs']}")
+        self.logger.success(f"Export completed for {subscription_name}")
+        self.logger.info(f"Successful: {results['successful_rgs']}/{results['total_rgs']}")
+        self.logger.info(f"Failed: {results['failed_rgs']}/{results['total_rgs']}")
         
         return results
     
     def export_all_subscriptions(self) -> Dict[str, Any]:
         """Export all enabled subscriptions"""
-        # Check/install aztfexport
         try:
             self._install_aztfexport()
         except Exception as e:
-            print(f"Error with aztfexport: {str(e)}")
+            self.logger.error(f"Error with aztfexport: {str(e)}")
             return {}
         
-        # Ensure base directory exists
         Path(self.base_dir).mkdir(parents=True, exist_ok=True)
-        
         subscriptions = self.config.get('subscriptions', [])
         create_rg_folders = self.config.get('output', {}).get('create_rg_folders', True)
-        
         all_results = {}
         
         for sub in subscriptions:
             if not sub.get('export_enabled', True):
-                print(f"\nSkipping subscription {sub['id']} (export disabled)")
+                self.logger.info(f"Skipping subscription {sub['id']} (export disabled)")
                 continue
             
             try:
                 result = self.export_subscription(sub, create_rg_folders)
                 all_results[sub['id']] = result
             except Exception as e:
-                print(f"\n✗ Error exporting subscription {sub['id']}: {str(e)}")
+                self.logger.error(f"Error exporting subscription {sub['id']}: {str(e)}")
                 all_results[sub['id']] = {
                     'subscription_id': sub['id'],
                     'subscription_name': sub['name'],
