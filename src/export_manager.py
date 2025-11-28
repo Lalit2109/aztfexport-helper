@@ -263,70 +263,82 @@ class ExportManager:
             env['TERM'] = 'dumb'  # Set terminal type to dumb
             env['NO_COLOR'] = '1'  # Disable color output
             
-            # Use script command to emulate TTY if available, otherwise run directly
-            import shutil
-            script_cmd = shutil.which('script')
-            
-            if script_cmd:
-                # Use script to create a pseudo-TTY
-                # Build command string with proper quoting
-                cmd_str = ' '.join(f'"{arg}"' if ' ' in arg or '"' in arg else arg for arg in cmd)
-                script_wrapper = [
-                    script_cmd,
-                    '-q',  # Quiet mode
-                    '-e',  # Return exit code
-                    '-c',  # Command to run
-                    cmd_str
-                ]
-                final_cmd = script_wrapper
-            else:
-                # Fallback: run directly with proper redirection
-                final_cmd = cmd
+            # Run aztfexport directly without script wrapper
+            # The --non-interactive flag and stdin=DEVNULL should prevent TTY errors
+            # If TTY errors occur, we'll handle them gracefully
             
             # Use Popen for real-time output streaming
             self.logger.info(f"Starting export for {resource_group}...")
             process = subprocess.Popen(
-                final_cmd,
+                cmd,  # Run aztfexport directly
                 cwd=str(Path(self.base_dir).resolve()),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,  # Capture stderr separately
                 env=env,
                 text=True,
                 bufsize=1,  # Line buffered for real-time output
                 universal_newlines=True
             )
             
-            # Stream output in real-time with deduplication
+            # Stream output in real-time from both stdout and stderr
             output_lines = []
-            last_generic_import = None
+            seen_lines = set()  # Track seen lines to prevent duplicates
+            
             try:
+                import sys
+                import threading
+                import queue
+                
+                def read_pipe(pipe, pipe_name):
+                    """Read from a pipe and put lines in queue"""
+                    for line in iter(pipe.readline, ''):
+                        if line:
+                            line = line.rstrip()
+                            # Use a key to identify duplicate lines (content + source)
+                            line_key = (line, pipe_name)
+                            if line_key not in seen_lines:
+                                seen_lines.add(line_key)
+                                output_lines.append(line)
+                                sys.stdout.write(line + '\n')
+                                sys.stdout.flush()
+                    pipe.close()
+                
+                # Read from both stdout and stderr in separate threads
+                stdout_thread = threading.Thread(target=read_pipe, args=(process.stdout, 'stdout'), daemon=True)
+                stderr_thread = threading.Thread(target=read_pipe, args=(process.stderr, 'stderr'), daemon=True)
+                
+                stdout_thread.start()
+                stderr_thread.start()
+                
+                stdout_thread.join()
+                stderr_thread.join()
+                
+            except Exception:
+                # Fallback: read sequentially if threading fails
                 import sys
                 for line in iter(process.stdout.readline, ''):
                     if line:
                         line = line.rstrip()
-                        output_lines.append(line)
-                        
-                        # Filter out redundant generic "Importing resources..." messages
-                        # Keep lines with progress info like "(21/25) Importing ..."
-                        is_generic_import = (line.strip() == "Importing resources..." or 
-                                           (line.strip().startswith("Importing resources...") and 
-                                            not ('(' in line and ')' in line and '/' in line)))
-                        
-                        if is_generic_import:
-                            # Skip if it's the same as the last generic import message
-                            if last_generic_import == line:
-                                continue
-                            last_generic_import = line
-                        else:
-                            # Reset when we see a different type of message
-                            last_generic_import = None
-                        
-                        # Print directly for real-time visibility in pipeline
-                        sys.stdout.write(line + '\n')
-                        sys.stdout.flush()
+                        if line not in seen_lines:
+                            seen_lines.add(line)
+                            output_lines.append(line)
+                            sys.stdout.write(line + '\n')
+                            sys.stdout.flush()
+                # Read stderr
+                for line in iter(process.stderr.readline, ''):
+                    if line:
+                        line = line.rstrip()
+                        if line not in seen_lines:
+                            seen_lines.add(line)
+                            output_lines.append(line)
+                            sys.stdout.write(line + '\n')
+                            sys.stdout.flush()
             finally:
-                process.stdout.close()
+                if process.stdout:
+                    process.stdout.close()
+                if process.stderr:
+                    process.stderr.close()
                 exit_code = process.wait(timeout=3600)
             
             # Store full output for error analysis
