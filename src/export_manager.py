@@ -260,16 +260,55 @@ class ExportManager:
             
             env = os.environ.copy()
             env['AZTFEXPORT_NON_INTERACTIVE'] = 'true'
+            env['TERM'] = 'dumb'  # Set terminal type to dumb
+            env['NO_COLOR'] = '1'  # Disable color output
+            
+            # Use script command to emulate TTY if available, otherwise run directly
+            import shutil
+            script_cmd = shutil.which('script')
+            
+            if script_cmd:
+                # Use script to create a pseudo-TTY
+                # Build command string with proper quoting
+                cmd_str = ' '.join(f'"{arg}"' if ' ' in arg or '"' in arg else arg for arg in cmd)
+                script_wrapper = [
+                    script_cmd,
+                    '-q',  # Quiet mode
+                    '-e',  # Return exit code
+                    '-c',  # Command to run
+                    cmd_str
+                ]
+                final_cmd = script_wrapper
+            else:
+                # Fallback: run directly with proper redirection
+                final_cmd = cmd
             
             result = subprocess.run(
-                cmd,
+                final_cmd,
                 cwd=str(Path(self.base_dir).resolve()),
                 timeout=3600,
                 stdin=subprocess.DEVNULL,
-                env=env
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                text=True
             )
             
-            if result.returncode == 0:
+            # Log output for debugging
+            if result.stdout:
+                # Log last few lines of output for context
+                output_lines = result.stdout.strip().split('\n')
+                if len(output_lines) > 10:
+                    self.logger.debug("Last 10 lines of output:")
+                    for line in output_lines[-10:]:
+                        self.logger.debug(f"  {line}")
+                else:
+                    self.logger.debug(f"Output: {result.stdout}")
+            
+            # Check return code (script command returns the exit code of the command it runs)
+            exit_code = result.returncode
+            
+            if exit_code == 0:
                 tf_files_direct = list(output_path.glob('*.tf'))
                 tf_files_recursive = list(output_path.rglob('*.tf'))
                 tf_files = tf_files_recursive if tf_files_recursive else tf_files_direct
@@ -300,7 +339,14 @@ class ExportManager:
                     self.logger.info("Check if the resource group has exportable resources")
                     return False
             else:
-                self.logger.error(f"Error exporting {resource_group} (exit code: {result.returncode})")
+                self.logger.error(f"Error exporting {resource_group} (exit code: {exit_code})")
+                if result.stdout:
+                    error_lines = result.stdout.strip().split('\n')
+                    # Show last 20 lines of error output
+                    self.logger.error("Error output:")
+                    for line in error_lines[-20:]:
+                        if line.strip():
+                            self.logger.error(f"  {line}")
                 self.logger.info("Check the output above for error details")
                 return False
                 
