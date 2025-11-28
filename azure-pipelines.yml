@@ -47,6 +47,11 @@ steps:
       pip install -r requirements.txt
     displayName: 'Install Python dependencies'
 
+  - task: TerraformInstaller@0
+    displayName: 'Install Terraform'
+    inputs:
+      terraformVersion: 'latest'
+
   # Step 2: Configure Azure authentication and run export
   - task: AzureCLI@2
     displayName: 'Azure Login and Export'
@@ -59,6 +64,11 @@ steps:
         az account show
         echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
         echo "Logged in to subscription: $(az account show --query name -o tsv)"
+        
+        # Verify Terraform is available
+        echo "Checking Terraform installation..."
+        terraform --version || echo "Warning: Terraform not found in PATH"
+        which terraform || echo "Warning: terraform command not found"
         
         # Configure Git
         git config --global user.name "Azure Pipelines"
