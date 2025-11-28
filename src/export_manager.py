@@ -29,7 +29,8 @@ class ExportManager:
         set_log_level(log_level)
         self.logger = get_logger()
         
-        self.base_dir = self.config.get('output', {}).get('base_dir', './exports')
+        # Check OUTPUT_DIR environment variable first, then config
+        self.base_dir = os.getenv('OUTPUT_DIR') or self.config.get('output', {}).get('base_dir', './exports')
         self.az_cli_path = self._find_az_cli()
     
     def _find_az_cli(self) -> str:

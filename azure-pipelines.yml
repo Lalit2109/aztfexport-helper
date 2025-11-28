@@ -90,6 +90,22 @@ steps:
       SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
 
   # Step 6: Publish export results as artifacts
+  - script: |
+      # Ensure output directory exists
+      if [ ! -d "$(outputDir)" ]; then
+        echo "Creating output directory: $(outputDir)"
+        mkdir -p "$(outputDir)"
+      fi
+      # Check if directory has content
+      if [ -z "$(ls -A $(outputDir) 2>/dev/null)" ]; then
+        echo "Warning: Output directory is empty, creating placeholder"
+        echo "No exports completed" > "$(outputDir)/README.txt"
+      fi
+      echo "Output directory contents:"
+      ls -la "$(outputDir)" || echo "Directory is empty"
+    displayName: 'Prepare Output Directory'
+    continueOnError: true
+
   - task: PublishBuildArtifacts@1
     displayName: 'Publish Export Results'
     inputs:
