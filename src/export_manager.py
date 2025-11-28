@@ -283,31 +283,43 @@ class ExportManager:
                 # Fallback: run directly with proper redirection
                 final_cmd = cmd
             
-            result = subprocess.run(
+            # Use Popen for real-time output streaming
+            self.logger.info(f"Starting export for {resource_group}...")
+            process = subprocess.Popen(
                 final_cmd,
                 cwd=str(Path(self.base_dir).resolve()),
-                timeout=3600,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=env,
-                text=True
+                text=True,
+                bufsize=1,  # Line buffered for real-time output
+                universal_newlines=True
             )
             
-            # Log output for debugging
-            if result.stdout:
-                # Log last few lines of output for context
-                output_lines = result.stdout.strip().split('\n')
-                if len(output_lines) > 10:
-                    self.logger.debug("Last 10 lines of output:")
-                    for line in output_lines[-10:]:
-                        self.logger.debug(f"  {line}")
-                else:
-                    self.logger.debug(f"Output: {result.stdout}")
+            # Stream output in real-time
+            output_lines = []
+            try:
+                for line in iter(process.stdout.readline, ''):
+                    if line:
+                        line = line.rstrip()
+                        output_lines.append(line)
+                        # Print directly for real-time visibility in pipeline
+                        print(line)  # Real-time output in Azure DevOps logs
+            finally:
+                process.stdout.close()
+                exit_code = process.wait(timeout=3600)
             
-            # Check return code (script command returns the exit code of the command it runs)
-            exit_code = result.returncode
+            # Store full output for error analysis
+            full_output = '\n'.join(output_lines)
             
+            # Clear completion message
+            if exit_code == 0:
+                self.logger.info(f"✓ Export command completed successfully for {resource_group}")
+            else:
+                self.logger.error(f"✗ Export command failed for {resource_group} (exit code: {exit_code})")
+            
+            # Check return code
             if exit_code == 0:
                 tf_files_direct = list(output_path.glob('*.tf'))
                 tf_files_recursive = list(output_path.rglob('*.tf'))
@@ -315,43 +327,48 @@ class ExportManager:
                 
                 if tf_files:
                     actual_dir = tf_files[0].parent
-                    self.logger.success(f"Successfully exported {resource_group}")
-                    self.logger.info(f"Created {len(tf_files)} Terraform file(s)")
+                    self.logger.success(f"✓✓ Successfully exported {resource_group}")
+                    self.logger.info(f"   Created {len(tf_files)} Terraform file(s)")
                     if actual_dir != output_path:
-                        self.logger.debug(f"Files created in: {actual_dir}")
+                        self.logger.debug(f"   Files created in: {actual_dir}")
                     return True
                 else:
                     if output_path.exists():
                         all_files = list(output_path.iterdir())
-                        self.logger.warning("Command succeeded but no .tf files found")
-                        self.logger.debug(f"Checking directory: {output_path}")
+                        self.logger.warning(f"⚠ Export completed but no .tf files found for {resource_group}")
+                        self.logger.debug(f"   Checking directory: {output_path}")
                         if all_files:
-                            self.logger.debug(f"Found {len(all_files)} item(s) in directory:")
+                            self.logger.debug(f"   Found {len(all_files)} item(s) in directory:")
                             for item in all_files[:5]:
                                 item_type = "directory" if item.is_dir() else "file"
-                                self.logger.debug(f"  - {item.name} ({item_type})")
+                                self.logger.debug(f"     - {item.name} ({item_type})")
                             if len(all_files) > 5:
-                                self.logger.debug(f"  ... and {len(all_files) - 5} more")
+                                self.logger.debug(f"     ... and {len(all_files) - 5} more")
                         else:
-                            self.logger.debug("Directory is empty")
+                            self.logger.debug("   Directory is empty")
                     else:
-                        self.logger.warning(f"Command succeeded but output directory does not exist: {output_path}")
-                    self.logger.info("Check if the resource group has exportable resources")
+                        self.logger.warning(f"⚠ Export completed but output directory does not exist: {output_path}")
+                    self.logger.info("   Check if the resource group has exportable resources")
                     return False
             else:
-                self.logger.error(f"Error exporting {resource_group} (exit code: {exit_code})")
-                if result.stdout:
-                    error_lines = result.stdout.strip().split('\n')
+                self.logger.error(f"✗✗ Error exporting {resource_group} (exit code: {exit_code})")
+                if full_output:
+                    error_lines = full_output.strip().split('\n')
                     # Show last 20 lines of error output
-                    self.logger.error("Error output:")
+                    self.logger.error("   Error output (last 20 lines):")
                     for line in error_lines[-20:]:
                         if line.strip():
-                            self.logger.error(f"  {line}")
-                self.logger.info("Check the output above for error details")
+                            self.logger.error(f"     {line}")
+                self.logger.info("   Check the output above for error details")
                 return False
                 
         except subprocess.TimeoutExpired:
-            self.logger.error(f"Timeout exporting {resource_group} (exceeded 1 hour)")
+            if 'process' in locals():
+                try:
+                    process.kill()
+                except:
+                    pass
+            self.logger.error(f"✗✗ Timeout exporting {resource_group} (exceeded 1 hour)")
             return False
         except FileNotFoundError:
             self.logger.error("aztfexport not found. Make sure it's installed and in PATH")
