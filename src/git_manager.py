@@ -42,8 +42,21 @@ class GitManager:
         return os.getenv('AZURE_DEVOPS_PAT') or os.getenv('SYSTEM_ACCESS_TOKEN')
     
     def _get_branch(self, subscription: Dict[str, Any]) -> str:
-        """Get branch name for subscription"""
-        return subscription.get('branch') or self.git_config.get('branch', 'main')
+        """Get branch name for subscription with date and time"""
+        from datetime import datetime
+        
+        # Get base branch name
+        base_branch = (
+            subscription.get('branch') or 
+            os.getenv('GIT_BRANCH') or 
+            self.git_config.get('branch', 'main')
+        )
+        
+        # Format: YYYY-MM-DD-HHMM
+        date_str = datetime.now().strftime('%Y-%m-%d-%H%M')
+        branch_name = f"{base_branch}-{date_str}"
+        
+        return branch_name
     
     def _configure_git_credentials(self, repo_url: str) -> bool:
         """Configure git credentials for Azure DevOps"""
@@ -206,6 +219,36 @@ resource-group-name/
             self.logger.error(f"Failed to configure git remote: {e.stderr.decode()}")
             return False
     
+    def _checkout_branch(self, repo_path: Path, branch: str) -> bool:
+        """Create and checkout branch locally"""
+        try:
+            result = subprocess.run(
+                ['git', 'checkout', '-b', branch],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                self.logger.debug(f"Created and checked out branch: {branch}")
+                return True
+            elif 'already exists' in result.stderr.lower() or 'already on' in result.stderr.lower():
+                result = subprocess.run(
+                    ['git', 'checkout', branch],
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    self.logger.debug(f"Checked out existing branch: {branch}")
+                    return True
+            
+            self.logger.warning(f"Could not checkout branch {branch}: {result.stderr}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Error checking out branch: {str(e)}")
+            return False
+    
     def _commit_changes(self, repo_path: Path, subscription: Dict[str, Any]) -> bool:
         """Commit all changes to git"""
         try:
@@ -305,6 +348,9 @@ resource-group-name/
         
         if not self._add_remote(export_path, repo_url):
             return False
+        
+        if not self._checkout_branch(export_path, branch):
+            self.logger.warning("Continuing with current branch")
         
         if not self._commit_changes(export_path, subscription):
             return False
