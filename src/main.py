@@ -95,7 +95,6 @@ def main():
         logger.info("Pushing to Git Repositories")
         logger.info("=" * 70)
         
-        from pathlib import Path
         subscriptions = export_manager.config.get('subscriptions', [])
         
         for sub in subscriptions:

@@ -47,9 +47,9 @@ steps:
       pip install -r requirements.txt
     displayName: 'Install Python dependencies'
 
-  # Step 2: Configure Azure authentication using service connection
+  # Step 2: Configure Azure authentication and run export
   - task: AzureCLI@2
-    displayName: 'Azure Login via Service Connection'
+    displayName: 'Azure Login and Export'
     inputs:
       azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
       scriptType: 'bash'
@@ -59,35 +59,25 @@ steps:
         az account show
         echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
         echo "Logged in to subscription: $(az account show --query name -o tsv)"
-
-  # Step 3: Configure Git
-  - script: |
-      git config --global user.name "Azure Pipelines"
-      git config --global user.email "azure-pipelines@devops.com"
-    displayName: 'Configure Git'
-
-  # Step 4: Set up Azure DevOps authentication for git operations
-  # SYSTEM_ACCESS_TOKEN is automatically available in Azure DevOps pipelines
-  - script: |
-      echo "Setting up Azure DevOps authentication..."
-      echo "##vso[task.setvariable variable=AZURE_DEVOPS_PAT]$(System.AccessToken)"
-    displayName: 'Setup Azure DevOps Token'
+        
+        # Configure Git
+        git config --global user.name "Azure Pipelines"
+        git config --global user.email "azure-pipelines@devops.com"
+        
+        # Set up environment variables
+        export PUSH_TO_REPOS=$(pushToRepos)
+        export GIT_BRANCH=$(gitBranch)
+        export OUTPUT_DIR=$(outputDir)
+        export LOG_LEVEL=INFO
+        export CONFIG_PATH=$(configPath)
+        export AZURE_DEVOPS_PAT=$(System.AccessToken)
+        export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
+        
+        # Run export
+        echo "Starting Terraform export..."
+        python src/main.py
     env:
       SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
-
-  # Step 5: Run export
-  - script: |
-      echo "Starting Terraform export..."
-      export PUSH_TO_REPOS=$(pushToRepos)
-      export GIT_BRANCH=$(gitBranch)
-      export OUTPUT_DIR=$(outputDir)
-      export LOG_LEVEL=INFO
-      python src/main.py
-    displayName: 'Export Azure Resources to Terraform'
-    env:
-      SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
-      AZURE_DEVOPS_PAT: $(System.AccessToken)
-      CONFIG_PATH: $(configPath)
 
   # Step 6: Publish export results as artifacts
   - task: PublishBuildArtifacts@1
