@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
+from urllib.parse import quote, urlparse, urlunparse
 from logger import get_logger
 
 
@@ -23,7 +24,8 @@ class GitManager:
         """Get repository URL for a subscription"""
         repo_url = subscription.get('repo_url')
         if repo_url:
-            return repo_url
+            # URL encode spaces and special characters in the URL
+            return self._encode_repo_url(repo_url)
         
         repo_name = subscription.get('repo_name')
         if not repo_name:
@@ -33,9 +35,36 @@ class GitManager:
         project = self.azure_devops_config.get('project')
         
         if org and project:
-            return f"https://dev.azure.com/{org}/{project}/_git/{repo_name}"
+            # URL encode org, project, and repo_name
+            encoded_org = quote(org, safe='')
+            encoded_project = quote(project, safe='')
+            encoded_repo = quote(repo_name, safe='')
+            return f"https://dev.azure.com/{encoded_org}/{encoded_project}/_git/{encoded_repo}"
         
         return None
+    
+    def _encode_repo_url(self, url: str) -> str:
+        """URL encode spaces and special characters in repository URL"""
+        try:
+            parsed = urlparse(url)
+            # Encode path components
+            path_parts = parsed.path.split('/')
+            encoded_parts = [quote(part, safe='') for part in path_parts]
+            encoded_path = '/'.join(encoded_parts)
+            
+            # Reconstruct URL with encoded path
+            encoded_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                encoded_path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment
+            ))
+            return encoded_url
+        except Exception:
+            # Fallback: simple replacement for spaces
+            return url.replace(' ', '%20')
     
     def _get_pat_token(self) -> Optional[str]:
         """Get Azure DevOps PAT token from environment"""
@@ -310,9 +339,24 @@ resource-group-name/
             else:
                 repo_url_with_auth = repo_url
             
-            # Update remote URL
+            # URL encode the authenticated URL to handle spaces
+            # Parse and encode the URL properly
+            parsed = urlparse(repo_url_with_auth)
+            path_parts = parsed.path.split('/')
+            encoded_parts = [quote(part, safe='') for part in path_parts]
+            encoded_path = '/'.join(encoded_parts)
+            encoded_repo_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                encoded_path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment
+            ))
+            
+            # Update remote URL with encoded URL
             subprocess.run(
-                ['git', 'remote', 'set-url', 'origin', repo_url_with_auth],
+                ['git', 'remote', 'set-url', 'origin', encoded_repo_url],
                 cwd=str(repo_path),
                 check=True,
                 capture_output=True,

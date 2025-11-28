@@ -297,15 +297,34 @@ class ExportManager:
                 universal_newlines=True
             )
             
-            # Stream output in real-time
+            # Stream output in real-time with deduplication
             output_lines = []
+            last_generic_import = None
             try:
+                import sys
                 for line in iter(process.stdout.readline, ''):
                     if line:
                         line = line.rstrip()
                         output_lines.append(line)
+                        
+                        # Filter out redundant generic "Importing resources..." messages
+                        # Keep lines with progress info like "(21/25) Importing ..."
+                        is_generic_import = (line.strip() == "Importing resources..." or 
+                                           (line.strip().startswith("Importing resources...") and 
+                                            not ('(' in line and ')' in line and '/' in line)))
+                        
+                        if is_generic_import:
+                            # Skip if it's the same as the last generic import message
+                            if last_generic_import == line:
+                                continue
+                            last_generic_import = line
+                        else:
+                            # Reset when we see a different type of message
+                            last_generic_import = None
+                        
                         # Print directly for real-time visibility in pipeline
-                        print(line)  # Real-time output in Azure DevOps logs
+                        sys.stdout.write(line + '\n')
+                        sys.stdout.flush()
             finally:
                 process.stdout.close()
                 exit_code = process.wait(timeout=3600)
@@ -313,11 +332,16 @@ class ExportManager:
             # Store full output for error analysis
             full_output = '\n'.join(output_lines)
             
-            # Clear completion message
+            # Clear completion message - make it very visible
+            self.logger.info("")
             if exit_code == 0:
-                self.logger.info(f"✓ Export command completed successfully for {resource_group}")
+                self.logger.info("=" * 60)
+                self.logger.success(f"✓ EXPORT COMPLETED SUCCESSFULLY for {resource_group}")
+                self.logger.info("=" * 60)
             else:
-                self.logger.error(f"✗ Export command failed for {resource_group} (exit code: {exit_code})")
+                self.logger.info("=" * 60)
+                self.logger.error(f"✗ EXPORT FAILED for {resource_group} (exit code: {exit_code})")
+                self.logger.info("=" * 60)
             
             # Check return code
             if exit_code == 0:
