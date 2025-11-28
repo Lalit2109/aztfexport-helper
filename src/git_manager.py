@@ -288,27 +288,44 @@ resource-group-name/
             return False
         
         try:
+            # Update remote URL with authentication
             if 'dev.azure.com' in repo_url:
                 org = self.azure_devops_config.get('organization')
-                if org and f'https://dev.azure.com/{org}' in repo_url:
-                    repo_url_with_auth = repo_url.replace(
-                        f'https://dev.azure.com/{org}',
-                        f'https://{pat_token}@dev.azure.com/{org}'
-                    )
+                if org:
+                    # Extract org from URL or use config
+                    if f'https://dev.azure.com/{org}' in repo_url:
+                        auth_url = f'https://{pat_token}@dev.azure.com/{org}'
+                        repo_url_with_auth = repo_url.replace(f'https://dev.azure.com/{org}', auth_url)
+                    else:
+                        # Try to extract org from URL
+                        parts = repo_url.replace('https://dev.azure.com/', '').split('/')
+                        if len(parts) > 0:
+                            extracted_org = parts[0]
+                            auth_url = f'https://{pat_token}@dev.azure.com/{extracted_org}'
+                            repo_url_with_auth = repo_url.replace(f'https://dev.azure.com/{extracted_org}', auth_url)
+                        else:
+                            repo_url_with_auth = repo_url.replace('https://dev.azure.com', f'https://{pat_token}@dev.azure.com')
                 else:
-                    repo_url_with_auth = repo_url.replace(
-                        'https://dev.azure.com',
-                        f'https://{pat_token}@dev.azure.com'
-                    )
+                    repo_url_with_auth = repo_url.replace('https://dev.azure.com', f'https://{pat_token}@dev.azure.com')
             else:
                 repo_url_with_auth = repo_url
             
+            # Update remote URL
+            subprocess.run(
+                ['git', 'remote', 'set-url', 'origin', repo_url_with_auth],
+                cwd=str(repo_path),
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            
+            # Push with authentication
             result = subprocess.run(
                 ['git', 'push', '-u', 'origin', branch, '--force'],
                 cwd=str(repo_path),
                 capture_output=True,
                 text=True,
-                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'}
+                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
             )
             
             if result.returncode == 0:
@@ -320,6 +337,9 @@ resource-group-name/
                 return False
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to push to remote: {str(e)}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error during git push: {str(e)}")
             return False
     
     def push_to_repo(

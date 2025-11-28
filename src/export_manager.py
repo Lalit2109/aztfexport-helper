@@ -258,10 +258,15 @@ class ExportManager:
             self.logger.debug(f"Output directory: {output_path}")
             self.logger.info("This may take several minutes...")
             
+            env = os.environ.copy()
+            env['AZTFEXPORT_NON_INTERACTIVE'] = 'true'
+            
             result = subprocess.run(
                 cmd,
                 cwd=str(Path(self.base_dir).resolve()),
-                timeout=3600
+                timeout=3600,
+                stdin=subprocess.DEVNULL,
+                env=env
             )
             
             if result.returncode == 0:
