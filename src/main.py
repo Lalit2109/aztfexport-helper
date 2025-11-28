@@ -86,6 +86,38 @@ def main():
         logger.error("No subscriptions were exported. Check your configuration.")
         sys.exit(1)
     
+    push_to_repos = os.getenv('PUSH_TO_REPOS', 'false').lower() == 'true'
+    push_to_repos = push_to_repos or export_manager.config.get('git', {}).get('push_to_repos', False)
+    
+    if push_to_repos:
+        logger.info("")
+        logger.info("=" * 70)
+        logger.info("Pushing to Git Repositories")
+        logger.info("=" * 70)
+        
+        from pathlib import Path
+        subscriptions = export_manager.config.get('subscriptions', [])
+        
+        for sub in subscriptions:
+            if not sub.get('export_enabled', True):
+                continue
+            
+            subscription_name = sub.get('name', sub.get('id'))
+            sub_dir = Path(export_manager.base_dir) / export_manager._sanitize_name(subscription_name)
+            
+            if sub_dir.exists():
+                logger.info(f"Pushing {subscription_name} to repository...")
+                try:
+                    success = export_manager.push_subscription_to_git(sub, sub_dir)
+                    if success:
+                        logger.success(f"Successfully pushed {subscription_name}")
+                    else:
+                        logger.error(f"Failed to push {subscription_name}")
+                except Exception as e:
+                    logger.error(f"Error pushing {subscription_name}: {str(e)}")
+            else:
+                logger.warning(f"Export directory not found for {subscription_name}: {sub_dir}")
+    
     logger.info("")
     logger.info("=" * 70)
     logger.info("Export Summary")

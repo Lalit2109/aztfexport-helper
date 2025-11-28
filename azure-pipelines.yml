@@ -1,5 +1,5 @@
 # Azure DevOps Pipeline for Terraform Export
-# This pipeline exports Azure resources using aztfexport and pushes to repos
+# Exports Azure resources using aztfexport and pushes to git repositories
 
 trigger:
   - main
@@ -18,6 +18,8 @@ variables:
     value: '$(Pipeline.Workspace)/exports'
   - name: gitBranch
     value: 'main'
+  - name: pushToRepos
+    value: 'true'  # Set to 'false' to disable git push
 
 steps:
   # Step 1: Install prerequisites
@@ -25,7 +27,6 @@ steps:
     displayName: 'Install Go (for aztfexport)'
     inputs:
       version: '1.21.x'
-    condition: always()
 
   - script: |
       echo "Installing aztfexport..."
@@ -34,7 +35,6 @@ steps:
       aztfexport --version
       echo "##vso[task.prependpath]$(go env GOPATH)/bin"
     displayName: 'Install aztfexport'
-    condition: always()
 
   - task: UsePythonVersion@0
     displayName: 'Setup Python'
@@ -47,16 +47,18 @@ steps:
       pip install -r requirements.txt
     displayName: 'Install Python dependencies'
 
-  # Step 2: Configure Azure authentication
+  # Step 2: Configure Azure authentication using service connection
   - task: AzureCLI@2
-    displayName: 'Azure Login'
+    displayName: 'Azure Login via Service Connection'
     inputs:
-      azureSubscription: '$(azureServiceConnection)'  # Service connection name
+      azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
       scriptType: 'bash'
       scriptLocation: 'inlineScript'
       inlineScript: |
-        az account list --output table
+        echo "Authenticating with Azure..."
+        az account show
         echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
+        echo "Logged in to subscription: $(az account show --query name -o tsv)"
 
   # Step 3: Configure Git
   - script: |
@@ -64,9 +66,10 @@ steps:
       git config --global user.email "azure-pipelines@devops.com"
     displayName: 'Configure Git'
 
-  # Step 4: Set up Azure DevOps PAT for git operations
+  # Step 4: Set up Azure DevOps authentication for git operations
+  # SYSTEM_ACCESS_TOKEN is automatically available in Azure DevOps pipelines
   - script: |
-      export AZURE_DEVOPS_PAT=$(System.AccessToken)
+      echo "Setting up Azure DevOps authentication..."
       echo "##vso[task.setvariable variable=AZURE_DEVOPS_PAT]$(System.AccessToken)"
     displayName: 'Setup Azure DevOps Token'
     env:
@@ -74,34 +77,37 @@ steps:
 
   # Step 5: Run export
   - script: |
-      export PUSH_TO_REPOS=true
+      echo "Starting Terraform export..."
+      export PUSH_TO_REPOS=$(pushToRepos)
       export GIT_BRANCH=$(gitBranch)
       export OUTPUT_DIR=$(outputDir)
+      export LOG_LEVEL=INFO
       python src/main.py
-    displayName: 'Export Azure Resources'
+    displayName: 'Export Azure Resources to Terraform'
     env:
       SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
-      AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
-      AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
-      AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+      AZURE_DEVOPS_PAT: $(System.AccessToken)
       CONFIG_PATH: $(configPath)
 
-  # Step 6: Publish export results
+  # Step 6: Publish export results as artifacts
   - task: PublishBuildArtifacts@1
     displayName: 'Publish Export Results'
     inputs:
       pathToPublish: '$(outputDir)'
       artifactName: 'terraform-exports'
       publishLocation: 'Container'
+    condition: always()
 
   # Step 7: Generate summary report
   - script: |
       if [ -f "$(outputDir)/export_results.json" ]; then
-        echo "## Export Summary"
+        echo "##vso[task.logissue type=command]##[section]Export Summary"
         echo "```json"
         cat $(outputDir)/export_results.json | python -m json.tool
         echo "```"
+      else
+        echo "Export results file not found"
       fi
-    displayName: 'Generate Summary'
+    displayName: 'Generate Summary Report'
     continueOnError: true
 

@@ -1,0 +1,317 @@
+"""
+Git Manager for pushing exported Terraform code to Azure DevOps repositories
+"""
+
+import os
+import subprocess
+from pathlib import Path
+from typing import Optional, Dict, Any
+from logger import get_logger
+
+
+class GitManager:
+    """Manages Git operations for pushing Terraform exports to repositories"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        """Initialize Git Manager"""
+        self.logger = get_logger()
+        self.config = config
+        self.azure_devops_config = config.get('azure_devops', {})
+        self.git_config = config.get('git', {})
+        
+    def _get_repo_url(self, subscription: Dict[str, Any]) -> Optional[str]:
+        """Get repository URL for a subscription"""
+        repo_url = subscription.get('repo_url')
+        if repo_url:
+            return repo_url
+        
+        repo_name = subscription.get('repo_name')
+        if not repo_name:
+            return None
+        
+        org = self.azure_devops_config.get('organization')
+        project = self.azure_devops_config.get('project')
+        
+        if org and project:
+            return f"https://dev.azure.com/{org}/{project}/_git/{repo_name}"
+        
+        return None
+    
+    def _get_pat_token(self) -> Optional[str]:
+        """Get Azure DevOps PAT token from environment"""
+        return os.getenv('AZURE_DEVOPS_PAT') or os.getenv('SYSTEM_ACCESS_TOKEN')
+    
+    def _get_branch(self, subscription: Dict[str, Any]) -> str:
+        """Get branch name for subscription"""
+        return subscription.get('branch') or self.git_config.get('branch', 'main')
+    
+    def _configure_git_credentials(self, repo_url: str) -> bool:
+        """Configure git credentials for Azure DevOps"""
+        pat_token = self._get_pat_token()
+        if not pat_token:
+            self.logger.error("Azure DevOps PAT token not found. Set AZURE_DEVOPS_PAT or SYSTEM_ACCESS_TOKEN")
+            return False
+        
+        try:
+            if 'dev.azure.com' in repo_url:
+                org = self.azure_devops_config.get('organization')
+                if org:
+                    credential_url = f"https://{pat_token}@dev.azure.com/{org}"
+                    git_config_cmd = [
+                        'git', 'config', '--global',
+                        f'url.{credential_url}/.insteadOf',
+                        f'https://dev.azure.com/{org}/'
+                    ]
+                    result = subprocess.run(git_config_cmd, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        self.logger.debug("Configured git credentials for Azure DevOps")
+                    else:
+                        self.logger.debug(f"Git credential config: {result.stderr}")
+        except Exception as e:
+            self.logger.warning(f"Could not configure git credentials: {str(e)}")
+        
+        return True
+    
+    def _init_git_repo(self, repo_path: Path) -> bool:
+        """Initialize git repository if not already initialized"""
+        git_dir = repo_path / '.git'
+        if git_dir.exists():
+            self.logger.debug("Git repository already initialized")
+            return True
+        
+        try:
+            subprocess.run(
+                ['git', 'init'],
+                cwd=str(repo_path),
+                check=True,
+                capture_output=True
+            )
+            self.logger.debug("Initialized git repository")
+            return True
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to initialize git repository: {e.stderr.decode()}")
+            return False
+    
+    def _create_gitignore(self, repo_path: Path):
+        """Create .gitignore file for Terraform"""
+        gitignore_path = repo_path / '.gitignore'
+        gitignore_content = """# Terraform files
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+"""
+        gitignore_path.write_text(gitignore_content)
+        self.logger.debug("Created .gitignore file")
+    
+    def _create_readme(self, repo_path: Path, subscription: Dict[str, Any]):
+        """Create README.md for the repository"""
+        readme_path = repo_path / 'README.md'
+        readme_content = f"""# Terraform Infrastructure as Code
+
+This repository contains Terraform code for Azure resources exported from subscription: **{subscription.get('name', 'N/A')}**
+
+## Subscription Information
+
+- **Subscription ID**: `{subscription.get('id', 'N/A')}`
+- **Subscription Name**: {subscription.get('name', 'N/A')}
+- **Environment**: {subscription.get('environment', 'N/A')}
+
+## Structure
+
+Each resource group is organized in its own directory:
+
+```
+resource-group-name/
+├── main.tf
+├── providers.tf
+└── ...
+```
+
+## Usage
+
+1. Navigate to a resource group directory:
+   ```bash
+   cd resource-group-name
+   ```
+
+2. Initialize Terraform:
+   ```bash
+   terraform init
+   ```
+
+3. Review the plan:
+   ```bash
+   terraform plan
+   ```
+
+## Notes
+
+- This code was automatically generated using `aztfexport`
+- Review and test before applying to production
+- Update provider versions as needed
+"""
+        readme_path.write_text(readme_content)
+        self.logger.debug("Created README.md file")
+    
+    def _add_remote(self, repo_path: Path, repo_url: str) -> bool:
+        """Add or update git remote"""
+        try:
+            result = subprocess.run(
+                ['git', 'remote', 'get-url', 'origin'],
+                cwd=str(repo_path),
+                capture_output=True
+            )
+            
+            if result.returncode == 0:
+                existing_url = result.stdout.decode().strip()
+                if existing_url != repo_url:
+                    subprocess.run(
+                        ['git', 'remote', 'set-url', 'origin', repo_url],
+                        cwd=str(repo_path),
+                        check=True,
+                        capture_output=True
+                    )
+                    self.logger.debug("Updated git remote URL")
+            else:
+                subprocess.run(
+                    ['git', 'remote', 'add', 'origin', repo_url],
+                    cwd=str(repo_path),
+                    check=True,
+                    capture_output=True
+                )
+                self.logger.debug("Added git remote")
+            
+            return True
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to configure git remote: {e.stderr.decode()}")
+            return False
+    
+    def _commit_changes(self, repo_path: Path, subscription: Dict[str, Any]) -> bool:
+        """Commit all changes to git"""
+        try:
+            subprocess.run(
+                ['git', 'add', '-A'],
+                cwd=str(repo_path),
+                check=True,
+                capture_output=True
+            )
+            
+            commit_message = f"Export Terraform code for subscription: {subscription.get('name', subscription.get('id'))}"
+            
+            result = subprocess.run(
+                ['git', 'commit', '-m', commit_message],
+                cwd=str(repo_path),
+                capture_output=True
+            )
+            
+            if result.returncode == 0:
+                self.logger.success(f"Committed changes: {commit_message}")
+                return True
+            elif 'nothing to commit' in result.stderr.decode().lower():
+                self.logger.info("No changes to commit")
+                return True
+            else:
+                self.logger.error(f"Failed to commit: {result.stderr.decode()}")
+                return False
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to commit changes: {e.stderr.decode()}")
+            return False
+    
+    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str) -> bool:
+        """Push changes to remote repository"""
+        pat_token = self._get_pat_token()
+        if not pat_token:
+            self.logger.error("PAT token not available for push")
+            return False
+        
+        try:
+            if 'dev.azure.com' in repo_url:
+                org = self.azure_devops_config.get('organization')
+                if org and f'https://dev.azure.com/{org}' in repo_url:
+                    repo_url_with_auth = repo_url.replace(
+                        f'https://dev.azure.com/{org}',
+                        f'https://{pat_token}@dev.azure.com/{org}'
+                    )
+                else:
+                    repo_url_with_auth = repo_url.replace(
+                        'https://dev.azure.com',
+                        f'https://{pat_token}@dev.azure.com'
+                    )
+            else:
+                repo_url_with_auth = repo_url
+            
+            result = subprocess.run(
+                ['git', 'push', '-u', 'origin', branch, '--force'],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'}
+            )
+            
+            if result.returncode == 0:
+                self.logger.success(f"Pushed to {branch} branch")
+                return True
+            else:
+                error_msg = result.stderr or result.stdout
+                self.logger.error(f"Failed to push: {error_msg}")
+                return False
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to push to remote: {str(e)}")
+            return False
+    
+    def push_to_repo(
+        self,
+        subscription: Dict[str, Any],
+        export_path: Path
+    ) -> bool:
+        """Push exported Terraform code to Azure DevOps repository"""
+        repo_url = self._get_repo_url(subscription)
+        if not repo_url:
+            self.logger.warning(f"No repository URL configured for subscription {subscription.get('id')}")
+            return False
+        
+        branch = self._get_branch(subscription)
+        self.logger.info(f"Pushing to repository: {repo_url}")
+        self.logger.info(f"Branch: {branch}")
+        
+        if not self._configure_git_credentials(repo_url):
+            return False
+        
+        if not self._init_git_repo(export_path):
+            return False
+        
+        self._create_gitignore(export_path)
+        self._create_readme(export_path, subscription)
+        
+        if not self._add_remote(export_path, repo_url):
+            return False
+        
+        if not self._commit_changes(export_path, subscription):
+            return False
+        
+        if not self._push_to_remote(export_path, branch, repo_url):
+            return False
+        
+        self.logger.success(f"Successfully pushed to repository: {repo_url}")
+        return True
+

@@ -33,11 +33,18 @@ subscriptions:
     name: "Production Subscription 1"
     environment: "prod"
     export_enabled: true
+    # Repository configuration (optional)
+    # repo_name: "terraform-prod-sub-1"  # Repository name (will be created if doesn't exist)
+    # repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"  # Full repository URL
+    # branch: "main"  # Override default branch
     
   - id: "subscription-id-2"
     name: "Development Subscription 1"
     environment: "dev"
     export_enabled: true
+    # repo_name: "terraform-dev-sub-1"
+    # repo_url: "https://dev.azure.com/org/project/_git/terraform-dev-sub-1"
+    # branch: "develop"  # Different branch for dev
     
   # Add remaining 33 subscriptions here
   # Template:
@@ -87,8 +94,18 @@ aztfexport:
 azure_devops:
   organization: "your-org"
   project: "your-project"
-  # Service connection name for Azure authentication
+  # Service connection name for Azure authentication (configured in pipeline variable group)
   service_connection: "Azure-ServiceConnection"
+
+# Git configuration
+git:
+  # Whether to push exported code to git repositories
+  # Can be overridden via PUSH_TO_REPOS environment variable
+  push_to_repos: false
+  
+  # Default branch name for git repositories
+  # Can be overridden per subscription
+  branch: "main"
 
 # Note: This tool uses Azure CLI (az) for all Azure operations
 # Azure CLI handles SSL certificates automatically, so no SSL configuration needed

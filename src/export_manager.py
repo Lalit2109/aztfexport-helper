@@ -412,4 +412,15 @@ class ExportManager:
         import re
         name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
         return name.lower()
+    
+    def push_subscription_to_git(
+        self,
+        subscription: Dict[str, Any],
+        export_path: Path
+    ) -> bool:
+        """Push exported subscription to git repository"""
+        from git_manager import GitManager
+        
+        git_manager = GitManager(self.config)
+        return git_manager.push_to_repo(subscription, export_path)
 
