@@ -263,82 +263,59 @@ class ExportManager:
             env['TERM'] = 'dumb'  # Set terminal type to dumb
             env['NO_COLOR'] = '1'  # Disable color output
             
-            # Run aztfexport directly without script wrapper
-            # The --non-interactive flag and stdin=DEVNULL should prevent TTY errors
-            # If TTY errors occur, we'll handle them gracefully
+            # Use script command to emulate TTY if available (required for aztfexport)
+            # This prevents "open /dev/tty: no such device or address" errors
+            import shutil
+            script_cmd = shutil.which('script')
+            
+            if script_cmd:
+                # Use script to create a pseudo-TTY
+                # Build command string with proper quoting
+                cmd_str = ' '.join(f'"{arg}"' if ' ' in arg or '"' in arg else arg for arg in cmd)
+                script_wrapper = [
+                    script_cmd,
+                    '-q',  # Quiet mode - suppresses script's own output
+                    '-e',  # Return exit code
+                    '-c',  # Command to run
+                    cmd_str
+                ]
+                final_cmd = script_wrapper
+            else:
+                # Fallback: run directly (may fail with TTY errors)
+                final_cmd = cmd
             
             # Use Popen for real-time output streaming
             self.logger.info(f"Starting export for {resource_group}...")
             process = subprocess.Popen(
-                cmd,  # Run aztfexport directly
+                final_cmd,
                 cwd=str(Path(self.base_dir).resolve()),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,  # Capture stderr separately
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout to capture all output
                 env=env,
                 text=True,
                 bufsize=1,  # Line buffered for real-time output
                 universal_newlines=True
             )
             
-            # Stream output in real-time from both stdout and stderr
+            # Stream output in real-time with deduplication
             output_lines = []
             seen_lines = set()  # Track seen lines to prevent duplicates
             
             try:
                 import sys
-                import threading
-                import queue
-                
-                def read_pipe(pipe, pipe_name):
-                    """Read from a pipe and put lines in queue"""
-                    for line in iter(pipe.readline, ''):
-                        if line:
-                            line = line.rstrip()
-                            # Use a key to identify duplicate lines (content + source)
-                            line_key = (line, pipe_name)
-                            if line_key not in seen_lines:
-                                seen_lines.add(line_key)
-                                output_lines.append(line)
-                                sys.stdout.write(line + '\n')
-                                sys.stdout.flush()
-                    pipe.close()
-                
-                # Read from both stdout and stderr in separate threads
-                stdout_thread = threading.Thread(target=read_pipe, args=(process.stdout, 'stdout'), daemon=True)
-                stderr_thread = threading.Thread(target=read_pipe, args=(process.stderr, 'stderr'), daemon=True)
-                
-                stdout_thread.start()
-                stderr_thread.start()
-                
-                stdout_thread.join()
-                stderr_thread.join()
-                
-            except Exception:
-                # Fallback: read sequentially if threading fails
-                import sys
                 for line in iter(process.stdout.readline, ''):
                     if line:
                         line = line.rstrip()
+                        # Only add to output_lines if not a duplicate
                         if line not in seen_lines:
                             seen_lines.add(line)
                             output_lines.append(line)
-                            sys.stdout.write(line + '\n')
-                            sys.stdout.flush()
-                # Read stderr
-                for line in iter(process.stderr.readline, ''):
-                    if line:
-                        line = line.rstrip()
-                        if line not in seen_lines:
-                            seen_lines.add(line)
-                            output_lines.append(line)
+                            # Print directly for real-time visibility in pipeline
                             sys.stdout.write(line + '\n')
                             sys.stdout.flush()
             finally:
-                if process.stdout:
-                    process.stdout.close()
-                if process.stderr:
-                    process.stderr.close()
+                process.stdout.close()
                 exit_code = process.wait(timeout=3600)
             
             # Store full output for error analysis
