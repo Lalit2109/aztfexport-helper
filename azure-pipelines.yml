@@ -1,5 +1,6 @@
 # Azure DevOps Pipeline for Terraform Export
 # Exports Azure resources using aztfexport and pushes to git repositories
+# Uses matrix strategy for parallel subscription exports
 
 trigger:
   - main
@@ -21,120 +22,285 @@ variables:
   - name: pushToRepos
     value: 'true'  # Set to 'false' to disable git push
 
-steps:
-  # Step 1: Install prerequisites
-  - task: GoTool@0
-    displayName: 'Install Go (for aztfexport)'
-    inputs:
-      version: '1.21.x'
+stages:
+  # Stage 1: Setup - Build matrix from subscriptions.yaml
+  - stage: Setup
+    displayName: 'Setup and Build Matrix'
+    jobs:
+      - job: BuildMatrix
+        displayName: 'Build Subscription Matrix'
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python'
+            inputs:
+              versionSpec: '3.10'
+              addToPath: true
 
-  - script: |
-      echo "Installing aztfexport..."
-      go install github.com/Azure/aztfexport@latest
-      export PATH=$PATH:$(go env GOPATH)/bin
-      aztfexport --version
-      echo "##vso[task.prependpath]$(go env GOPATH)/bin"
-    displayName: 'Install aztfexport'
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+            displayName: 'Install Python dependencies'
 
-  - task: UsePythonVersion@0
-    displayName: 'Setup Python'
-    inputs:
-      versionSpec: '3.10'
-      addToPath: true
+          - script: |
+              python -c "
+              import yaml
+              import json
+              import sys
+              
+              with open('$(configPath)', 'r') as f:
+                  config = yaml.safe_load(f)
+              
+              subscriptions = config.get('subscriptions', [])
+              matrix = {}
+              
+              for sub in subscriptions:
+                  if sub.get('export_enabled', True):
+                      sub_id = sub.get('id', '').replace('-', '_').replace('.', '_')
+                      # Sanitize for matrix key (Azure DevOps matrix keys must be alphanumeric + underscore)
+                      safe_id = ''.join(c if c.isalnum() or c == '_' else '_' for c in sub_id)
+                      matrix[safe_id] = {
+                          'subscriptionId': sub.get('id'),
+                          'subscriptionName': sub.get('name', sub.get('id'))
+                      }
+              
+              # Output as JSON for Azure DevOps
+              matrix_json = json.dumps(matrix)
+              print(f'##vso[task.setvariable variable=subscriptionMatrix;isOutput=true]{matrix_json}')
+              print(f'Matrix built with {len(matrix)} subscriptions')
+              print('Matrix:', matrix_json)
+              "
+            displayName: 'Build Subscription Matrix'
+            name: BuildMatrix
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
+  # Stage 2: Export - Parallel execution for each subscription
+  - stage: Export
+    displayName: 'Export Subscriptions'
+    dependsOn: Setup
+    jobs:
+      - job: ExportSubscription
+        displayName: 'Export Subscription $(subscriptionName)'
+        strategy:
+          matrix: $[ stageDependencies.Setup.BuildMatrix.outputs['BuildMatrix.subscriptionMatrix'] ]
+        steps:
+          # Step 1: Install prerequisites
+          - task: GoTool@0
+            displayName: 'Install Go (for aztfexport)'
+            inputs:
+              version: '1.21.x'
 
-  - task: TerraformInstaller@0
-    displayName: 'Install Terraform'
-    inputs:
-      terraformVersion: 'latest'
+          - script: |
+              echo "Installing aztfexport..."
+              go install github.com/Azure/aztfexport@latest
+              export PATH=$PATH:$(go env GOPATH)/bin
+              aztfexport --version
+              echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+            displayName: 'Install aztfexport'
 
-  # Step 2: Clean previous exports
-  - script: |
-      echo "Cleaning output directory: $(outputDir)"
-      if [ -d "$(outputDir)" ]; then
-        rm -rf "$(outputDir)"
-      fi
-      mkdir -p "$(outputDir)"
-      echo "Output directory is now clean:"
-      ls -la "$(outputDir)" || echo "Directory is empty"
-    displayName: 'Clean export/output directory'
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python'
+            inputs:
+              versionSpec: '3.10'
+              addToPath: true
 
-  # Step 3: Configure Azure authentication and run export
-  - task: AzureCLI@2
-    displayName: 'Azure Login and Export'
-    inputs:
-      azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
-      scriptType: 'bash'
-      scriptLocation: 'inlineScript'
-      inlineScript: |
-        echo "Authenticating with Azure..."
-        az account show
-        echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
-        echo "Logged in to subscription: $(az account show --query name -o tsv)"
-        
-        # Verify Terraform is available
-        echo "Checking Terraform installation..."
-        terraform --version || echo "Warning: Terraform not found in PATH"
-        which terraform || echo "Warning: terraform command not found"
-        
-        # Configure Git
-        git config --global user.name "Azure Pipelines"
-        git config --global user.email "azure-pipelines@devops.com"
-        
-        # Set up environment variables
-        export PUSH_TO_REPOS=$(pushToRepos)
-        export GIT_BRANCH=$(gitBranch)
-        export OUTPUT_DIR=$(outputDir)
-        export LOG_LEVEL=INFO
-        export CONFIG_PATH=$(configPath)
-        export AZURE_DEVOPS_PAT=$(System.AccessToken)
-        export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
-        
-        # Run export
-        echo "Starting Terraform export..."
-        python src/main.py
-    env:
-      SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+            displayName: 'Install Python dependencies'
 
-  # Step 6: Publish export results as artifacts
-  - script: |
-      # Ensure output directory exists
-      if [ ! -d "$(outputDir)" ]; then
-        echo "Creating output directory: $(outputDir)"
-        mkdir -p "$(outputDir)"
-      fi
-      # Check if directory has content
-      if [ -z "$(ls -A $(outputDir) 2>/dev/null)" ]; then
-        echo "Warning: Output directory is empty, creating placeholder"
-        echo "No exports completed" > "$(outputDir)/README.txt"
-      fi
-      echo "Output directory contents:"
-      ls -la "$(outputDir)" || echo "Directory is empty"
-    displayName: 'Prepare Output Directory'
-    continueOnError: true
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: 'latest'
 
-  - task: PublishBuildArtifacts@1
-    displayName: 'Publish Export Results'
-    inputs:
-      pathToPublish: '$(outputDir)'
-      artifactName: 'terraform-exports'
-      publishLocation: 'Container'
+          # Step 2: Set subscription-specific output directory
+          - script: |
+              export SUBSCRIPTION_OUTPUT_DIR="$(outputDir)/$(subscriptionName)"
+              mkdir -p "$SUBSCRIPTION_OUTPUT_DIR"
+              echo "##vso[task.setvariable variable=subscriptionOutputDir]$SUBSCRIPTION_OUTPUT_DIR"
+              echo "Subscription output directory: $SUBSCRIPTION_OUTPUT_DIR"
+            displayName: 'Setup Subscription Output Directory'
+            name: SetOutputDir
+
+          # Step 3: Configure Azure authentication and run export
+          - task: AzureCLI@2
+            displayName: 'Azure Login and Export Subscription'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Authenticating with Azure..."
+                az account show
+                
+                # Set the subscription for this job
+                echo "Setting subscription to: $(subscriptionId)"
+                az account set --subscription "$(subscriptionId)"
+                
+                current_sub = $(az account show --query id -o tsv)
+                current_name = $(az account show --query name -o tsv)
+                echo "Current subscription: $current_name ($current_sub)"
+                
+                # Verify Terraform is available
+                echo "Checking Terraform installation..."
+                terraform --version || echo "Warning: Terraform not found in PATH"
+                which terraform || echo "Warning: terraform command not found"
+                
+                # Configure Git
+                git config --global user.name "Azure Pipelines"
+                git config --global user.email "azure-pipelines@devops.com"
+                
+                # Set up environment variables
+                export PUSH_TO_REPOS=$(pushToRepos)
+                export GIT_BRANCH=$(gitBranch)
+                export OUTPUT_DIR=$(subscriptionOutputDir)
+                export LOG_LEVEL=INFO
+                export CONFIG_PATH=$(configPath)
+                export AZURE_DEVOPS_PAT=$(System.AccessToken)
+                export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
+                
+                # Run export for this subscription only
+                echo "Starting Terraform export for subscription: $(subscriptionName) ($(subscriptionId))"
+                python src/main.py --subscription-id "$(subscriptionId)"
+            env:
+              SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
+
+          # Step 4: Publish subscription-specific results
+          - script: |
+              # Ensure output directory exists
+              if [ ! -d "$(subscriptionOutputDir)" ]; then
+                echo "Creating output directory: $(subscriptionOutputDir)"
+                mkdir -p "$(subscriptionOutputDir)"
+              fi
+              # Check if directory has content
+              if [ -z "$(ls -A $(subscriptionOutputDir) 2>/dev/null)" ]; then
+                echo "Warning: Output directory is empty, creating placeholder"
+                echo "No exports completed for $(subscriptionName)" > "$(subscriptionOutputDir)/README.txt"
+              fi
+              echo "Output directory contents:"
+              ls -la "$(subscriptionOutputDir)" || echo "Directory is empty"
+            displayName: 'Prepare Subscription Output Directory'
+            continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Subscription Export Results'
+            inputs:
+              pathToPublish: '$(subscriptionOutputDir)'
+              artifactName: 'terraform-exports-$(subscriptionName)'
+              publishLocation: 'Container'
+            condition: always()
+
+  # Stage 3: Aggregate - Collect and merge all results
+  - stage: Aggregate
+    displayName: 'Aggregate Results'
+    dependsOn: Export
     condition: always()
+    jobs:
+      - job: AggregateResults
+        displayName: 'Aggregate Export Results'
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python'
+            inputs:
+              versionSpec: '3.10'
+              addToPath: true
 
-  # Step 7: Generate summary report
-  - script: |
-      if [ -f "$(outputDir)/export_results.json" ]; then
-        echo "##[section]Export Summary"
-        echo '```json'
-        cat "$(outputDir)/export_results.json" | python -m json.tool
-        echo '```'
-      else
-        echo "Export results file not found"
-      fi
-    displayName: 'Generate Summary Report'
-    continueOnError: true
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+            displayName: 'Install Python dependencies'
 
+          - task: DownloadBuildArtifacts@0
+            displayName: 'Download All Export Artifacts'
+            inputs:
+              buildType: 'current'
+              downloadType: 'specific'
+              itemPattern: 'terraform-exports-*'
+              downloadPath: '$(Pipeline.Workspace)/all-exports'
+            continueOnError: true
+
+          - script: |
+              python -c "
+              import json
+              import os
+              from pathlib import Path
+              
+              # Collect all export_results.json files
+              all_results = {}
+              artifacts_dir = Path('$(Pipeline.Workspace)/all-exports')
+              
+              # Find all export_results.json files
+              for result_file in artifacts_dir.rglob('export_results.json'):
+                  try:
+                      with open(result_file, 'r') as f:
+                          results = json.load(f)
+                          all_results.update(results)
+                  except Exception as e:
+                      print(f'Error reading {result_file}: {e}')
+              
+              # Also check individual subscription directories
+              for sub_dir in artifacts_dir.glob('terraform-exports-*'):
+                  result_file = sub_dir / 'export_results.json'
+                  if result_file.exists():
+                      try:
+                          with open(result_file, 'r') as f:
+                              results = json.load(f)
+                              all_results.update(results)
+                      except Exception as e:
+                          print(f'Error reading {result_file}: {e}')
+              
+              # Write aggregated results
+              output_dir = Path('$(outputDir)')
+              output_dir.mkdir(parents=True, exist_ok=True)
+              
+              results_file = output_dir / 'export_results.json'
+              with open(results_file, 'w') as f:
+                  json.dump(all_results, f, indent=2, default=str)
+              
+              # Print summary
+              total_subs = len(all_results)
+              successful_subs = sum(1 for r in all_results.values() if r.get('successful_rgs', 0) > 0)
+              total_rgs = sum(r.get('total_rgs', 0) for r in all_results.values())
+              successful_rgs = sum(r.get('successful_rgs', 0) for r in all_results.values())
+              
+              print('=' * 70)
+              print('Aggregated Export Summary')
+              print('=' * 70)
+              print(f'Subscriptions processed: {total_subs}')
+              print(f'Subscriptions with successful exports: {successful_subs}')
+              print(f'Total resource groups: {total_rgs}')
+              print(f'Successfully exported: {successful_rgs}')
+              print(f'Failed: {total_rgs - successful_rgs}')
+              print('=' * 70)
+              "
+            displayName: 'Aggregate Export Results'
+            continueOnError: true
+
+          - script: |
+              # Copy all exports to consolidated output directory
+              mkdir -p "$(outputDir)"
+              cp -r "$(Pipeline.Workspace)/all-exports"/* "$(outputDir)"/ 2>/dev/null || true
+              echo "Consolidated output directory contents:"
+              ls -la "$(outputDir)" || echo "Directory is empty"
+            displayName: 'Consolidate Export Outputs'
+            continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Consolidated Export Results'
+            inputs:
+              pathToPublish: '$(outputDir)'
+              artifactName: 'terraform-exports'
+              publishLocation: 'Container'
+            condition: always()
+
+          # Step 7: Generate summary report
+          - script: |
+              if [ -f "$(outputDir)/export_results.json" ]; then
+                echo "##[section]Export Summary"
+                echo '```json'
+                cat "$(outputDir)/export_results.json" | python -m json.tool
+                echo '```'
+              else
+                echo "Export results file not found"
+              fi
+            displayName: 'Generate Summary Report'
+            continueOnError: true

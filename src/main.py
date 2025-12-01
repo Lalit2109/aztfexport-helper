@@ -6,11 +6,84 @@ import os
 import sys
 import json
 import subprocess
+import argparse
 from pathlib import Path
+from typing import Dict, Any
 from dotenv import load_dotenv
 
 from export_manager import ExportManager
 from logger import get_logger
+
+
+def export_single_subscription(export_manager: ExportManager, subscription_id: str) -> Dict[str, Any]:
+    """Export a single subscription by ID"""
+    logger = get_logger()
+    subscriptions = export_manager.config.get('subscriptions', [])
+    
+    # Find the subscription in config
+    subscription = None
+    for sub in subscriptions:
+        if sub.get('id') == subscription_id:
+            subscription = sub
+            break
+    
+    if not subscription:
+        logger.error(f"Subscription {subscription_id} not found in configuration")
+        return {
+            'subscription_id': subscription_id,
+            'subscription_name': 'Unknown',
+            'error': f'Subscription {subscription_id} not found in configuration'
+        }
+    
+    if not subscription.get('export_enabled', True):
+        logger.info(f"Subscription {subscription_id} is disabled, skipping")
+        return {
+            'subscription_id': subscription_id,
+            'subscription_name': subscription.get('name', subscription_id),
+            'error': 'Export disabled for this subscription'
+        }
+    
+    # Export the subscription
+    try:
+        create_rg_folders = export_manager.config.get('output', {}).get('create_rg_folders', True)
+        result = export_manager.export_subscription(subscription, create_rg_folders)
+        
+        # Push to git if enabled and export was successful
+        push_to_repos = os.getenv('PUSH_TO_REPOS', 'false').lower() == 'true'
+        push_to_repos = push_to_repos or export_manager.config.get('git', {}).get('push_to_repos', False)
+        
+        if push_to_repos and result.get('successful_rgs', 0) > 0:
+            subscription_name = subscription.get('name', subscription_id)
+            sub_dir = Path(export_manager.base_dir) / export_manager._sanitize_name(subscription_name)
+            
+            if sub_dir.exists():
+                logger.info(f"Pushing {subscription_name} to repository...")
+                try:
+                    success = export_manager.push_subscription_to_git(subscription, sub_dir)
+                    if success:
+                        logger.success(f"Successfully pushed {subscription_name}")
+                        result['git_push'] = 'success'
+                    else:
+                        logger.error(f"Failed to push {subscription_name}")
+                        result['git_push'] = 'failed'
+                except Exception as e:
+                    logger.error(f"Error pushing {subscription_name}: {str(e)}")
+                    result['git_push'] = 'error'
+                    result['git_push_error'] = str(e)
+            else:
+                logger.warning(f"Export directory not found for {subscription_name}: {sub_dir}")
+                result['git_push'] = 'skipped'
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error exporting subscription {subscription_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'subscription_id': subscription_id,
+            'subscription_name': subscription.get('name', subscription_id),
+            'error': str(e)
+        }
 
 
 def main():
@@ -18,11 +91,20 @@ def main():
     load_dotenv()
     logger = get_logger()
     
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Export Azure resources to Terraform')
+    parser.add_argument('--subscription-id', type=str, help='Export only this subscription ID (for parallel execution)')
+    args = parser.parse_args()
+    
     config_path = os.getenv('CONFIG_PATH', 'config/subscriptions.yaml')
     
     logger.info("=" * 70)
     logger.info("Azure Infrastructure Export to Terraform")
     logger.info("Using aztfexport for resource export")
+    if args.subscription_id:
+        logger.info(f"Single subscription mode: {args.subscription_id}")
+    else:
+        logger.info("All subscriptions mode")
     logger.info("=" * 70)
     logger.info("")
     
@@ -74,63 +156,75 @@ def main():
     logger.info("Exporting Azure resources...")
     logger.info("-" * 70)
     
-    try:
-        results = export_manager.export_all_subscriptions()
-    except Exception as e:
-        logger.error(f"Fatal error during export: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-    
-    if not results:
-        logger.error("No subscriptions were exported. Check your configuration.")
-        sys.exit(1)
-    
-    # Only push to git if export was successful
-    push_to_repos = os.getenv('PUSH_TO_REPOS', 'false').lower() == 'true'
-    push_to_repos = push_to_repos or export_manager.config.get('git', {}).get('push_to_repos', False)
-    
-    if push_to_repos:
-        # Check if any exports were successful
-        total_successful = sum(r.get('successful_rgs', 0) for r in results.values())
+    # Single subscription mode (for parallel execution)
+    if args.subscription_id:
+        try:
+            result = export_single_subscription(export_manager, args.subscription_id)
+            results = {args.subscription_id: result}
+        except Exception as e:
+            logger.error(f"Fatal error during export: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+    else:
+        # All subscriptions mode (backward compatibility)
+        try:
+            results = export_manager.export_all_subscriptions()
+        except Exception as e:
+            logger.error(f"Fatal error during export: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
         
-        if total_successful == 0:
-            logger.warning("No successful exports found. Skipping git push.")
-        else:
-            logger.info("")
-            logger.info("=" * 70)
-            logger.info("Pushing to Git Repositories")
-            logger.info("=" * 70)
+        if not results:
+            logger.error("No subscriptions were exported. Check your configuration.")
+            sys.exit(1)
+        
+        # Only push to git if export was successful (for all subscriptions mode)
+        push_to_repos = os.getenv('PUSH_TO_REPOS', 'false').lower() == 'true'
+        push_to_repos = push_to_repos or export_manager.config.get('git', {}).get('push_to_repos', False)
+        
+        if push_to_repos:
+            # Check if any exports were successful
+            total_successful = sum(r.get('successful_rgs', 0) for r in results.values())
             
-            subscriptions = export_manager.config.get('subscriptions', [])
-            
-            for sub in subscriptions:
-                if not sub.get('export_enabled', True):
-                    continue
+            if total_successful == 0:
+                logger.warning("No successful exports found. Skipping git push.")
+            else:
+                logger.info("")
+                logger.info("=" * 70)
+                logger.info("Pushing to Git Repositories")
+                logger.info("=" * 70)
                 
-                subscription_id = sub.get('id')
-                subscription_result = results.get(subscription_id)
+                subscriptions = export_manager.config.get('subscriptions', [])
                 
-                # Only push if this subscription had successful exports
-                if subscription_result and subscription_result.get('successful_rgs', 0) > 0:
-                    subscription_name = sub.get('name', sub.get('id'))
-                    sub_dir = Path(export_manager.base_dir) / export_manager._sanitize_name(subscription_name)
+                for sub in subscriptions:
+                    if not sub.get('export_enabled', True):
+                        continue
                     
-                    if sub_dir.exists():
-                        logger.info(f"Pushing {subscription_name} to repository...")
-                        try:
-                            success = export_manager.push_subscription_to_git(sub, sub_dir)
-                            if success:
-                                logger.success(f"Successfully pushed {subscription_name}")
-                            else:
-                                logger.error(f"Failed to push {subscription_name}")
-                        except Exception as e:
-                            logger.error(f"Error pushing {subscription_name}: {str(e)}")
+                    subscription_id = sub.get('id')
+                    subscription_result = results.get(subscription_id)
+                    
+                    # Only push if this subscription had successful exports
+                    if subscription_result and subscription_result.get('successful_rgs', 0) > 0:
+                        subscription_name = sub.get('name', sub.get('id'))
+                        sub_dir = Path(export_manager.base_dir) / export_manager._sanitize_name(subscription_name)
+                        
+                        if sub_dir.exists():
+                            logger.info(f"Pushing {subscription_name} to repository...")
+                            try:
+                                success = export_manager.push_subscription_to_git(sub, sub_dir)
+                                if success:
+                                    logger.success(f"Successfully pushed {subscription_name}")
+                                else:
+                                    logger.error(f"Failed to push {subscription_name}")
+                            except Exception as e:
+                                logger.error(f"Error pushing {subscription_name}: {str(e)}")
+                        else:
+                            logger.warning(f"Export directory not found for {subscription_name}: {sub_dir}")
                     else:
-                        logger.warning(f"Export directory not found for {subscription_name}: {sub_dir}")
-                else:
-                    subscription_name = sub.get('name', sub.get('id'))
-                    logger.info(f"Skipping git push for {subscription_name} (no successful exports)")
+                        subscription_name = sub.get('name', sub.get('id'))
+                        logger.info(f"Skipping git push for {subscription_name} (no successful exports)")
     
     logger.info("")
     logger.info("=" * 70)
