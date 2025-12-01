@@ -29,7 +29,8 @@ class ExportManager:
         set_log_level(log_level)
         self.logger = get_logger()
         
-        self.base_dir = self.config.get('output', {}).get('base_dir', './exports')
+        # Check OUTPUT_DIR environment variable first, then config
+        self.base_dir = os.getenv('OUTPUT_DIR') or self.config.get('output', {}).get('base_dir', './exports')
         self.az_cli_path = self._find_az_cli()
     
     def _find_az_cli(self) -> str:
@@ -214,7 +215,8 @@ class ExportManager:
                     'query',
                     '--subscription-id', subscription_id,
                     '--output-dir', str(output_path),
-                    '--non-interactive'
+                    '--non-interactive',
+                    '--plain-ui'
                 ]
                 
                 if rg_name:
@@ -234,7 +236,8 @@ class ExportManager:
                 'resource-group',
                 '--subscription-id', subscription_id,
                 '--output-dir', str(output_path),
-                '--non-interactive'
+                '--non-interactive',
+                '--plain-ui'
             ]
             
             resource_types = self.config.get('aztfexport', {}).get('resource_types', [])
@@ -258,49 +261,130 @@ class ExportManager:
             self.logger.debug(f"Output directory: {output_path}")
             self.logger.info("This may take several minutes...")
             
-            result = subprocess.run(
-                cmd,
+            env = os.environ.copy()
+            env['AZTFEXPORT_NON_INTERACTIVE'] = 'true'
+            env['TERM'] = 'dumb'  # Set terminal type to dumb
+            env['NO_COLOR'] = '1'  # Disable color output
+            
+            # Use script command to emulate TTY if available (required for aztfexport)
+            # This prevents "open /dev/tty: no such device or address" errors
+            import shutil
+            script_cmd = shutil.which('script')
+            
+            if script_cmd:
+                # Use script to create a pseudo-TTY
+                # Build command string with proper quoting
+                cmd_str = ' '.join(f'"{arg}"' if ' ' in arg or '"' in arg else arg for arg in cmd)
+                script_wrapper = [
+                    script_cmd,
+                    '-q',  # Quiet mode - suppresses script's own output
+                    '-e',  # Return exit code
+                    '-c',  # Command to run
+                    cmd_str
+                ]
+                final_cmd = script_wrapper
+            else:
+                # Fallback: run directly (may fail with TTY errors)
+                final_cmd = cmd
+            
+            # Use Popen for real-time output streaming
+            self.logger.info(f"Starting export for {resource_group}...")
+            process = subprocess.Popen(
+                final_cmd,
                 cwd=str(Path(self.base_dir).resolve()),
-                timeout=3600
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout to capture all output
+                env=env,
+                text=True,
+                bufsize=1,  # Line buffered for real-time output
+                universal_newlines=True
             )
             
-            if result.returncode == 0:
+            # Stream output in real-time with deduplication
+            output_lines = []
+            seen_lines = set()  # Track seen lines to prevent duplicates
+            
+            try:
+                import sys
+                for line in iter(process.stdout.readline, ''):
+                    if line:
+                        line = line.rstrip()
+                        # Only add to output_lines if not a duplicate
+                        if line not in seen_lines:
+                            seen_lines.add(line)
+                            output_lines.append(line)
+                            # Print directly for real-time visibility in pipeline
+                            sys.stdout.write(line + '\n')
+                            sys.stdout.flush()
+            finally:
+                process.stdout.close()
+                exit_code = process.wait(timeout=3600)
+            
+            # Store full output for error analysis
+            full_output = '\n'.join(output_lines)
+            
+            # Clear completion message - make it very visible
+            self.logger.info("")
+            if exit_code == 0:
+                self.logger.info("=" * 60)
+                self.logger.success(f"✓ EXPORT COMPLETED SUCCESSFULLY for {resource_group}")
+                self.logger.info("=" * 60)
+            else:
+                self.logger.info("=" * 60)
+                self.logger.error(f"✗ EXPORT FAILED for {resource_group} (exit code: {exit_code})")
+                self.logger.info("=" * 60)
+            
+            # Check return code
+            if exit_code == 0:
                 tf_files_direct = list(output_path.glob('*.tf'))
                 tf_files_recursive = list(output_path.rglob('*.tf'))
                 tf_files = tf_files_recursive if tf_files_recursive else tf_files_direct
                 
                 if tf_files:
                     actual_dir = tf_files[0].parent
-                    self.logger.success(f"Successfully exported {resource_group}")
-                    self.logger.info(f"Created {len(tf_files)} Terraform file(s)")
+                    self.logger.success(f"✓✓ Successfully exported {resource_group}")
+                    self.logger.info(f"   Created {len(tf_files)} Terraform file(s)")
                     if actual_dir != output_path:
-                        self.logger.debug(f"Files created in: {actual_dir}")
+                        self.logger.debug(f"   Files created in: {actual_dir}")
                     return True
                 else:
                     if output_path.exists():
                         all_files = list(output_path.iterdir())
-                        self.logger.warning("Command succeeded but no .tf files found")
-                        self.logger.debug(f"Checking directory: {output_path}")
+                        self.logger.warning(f"⚠ Export completed but no .tf files found for {resource_group}")
+                        self.logger.debug(f"   Checking directory: {output_path}")
                         if all_files:
-                            self.logger.debug(f"Found {len(all_files)} item(s) in directory:")
+                            self.logger.debug(f"   Found {len(all_files)} item(s) in directory:")
                             for item in all_files[:5]:
                                 item_type = "directory" if item.is_dir() else "file"
-                                self.logger.debug(f"  - {item.name} ({item_type})")
+                                self.logger.debug(f"     - {item.name} ({item_type})")
                             if len(all_files) > 5:
-                                self.logger.debug(f"  ... and {len(all_files) - 5} more")
+                                self.logger.debug(f"     ... and {len(all_files) - 5} more")
                         else:
-                            self.logger.debug("Directory is empty")
+                            self.logger.debug("   Directory is empty")
                     else:
-                        self.logger.warning(f"Command succeeded but output directory does not exist: {output_path}")
-                    self.logger.info("Check if the resource group has exportable resources")
+                        self.logger.warning(f"⚠ Export completed but output directory does not exist: {output_path}")
+                    self.logger.info("   Check if the resource group has exportable resources")
                     return False
             else:
-                self.logger.error(f"Error exporting {resource_group} (exit code: {result.returncode})")
-                self.logger.info("Check the output above for error details")
+                self.logger.error(f"✗✗ Error exporting {resource_group} (exit code: {exit_code})")
+                if full_output:
+                    error_lines = full_output.strip().split('\n')
+                    # Show last 20 lines of error output
+                    self.logger.error("   Error output (last 20 lines):")
+                    for line in error_lines[-20:]:
+                        if line.strip():
+                            self.logger.error(f"     {line}")
+                self.logger.info("   Check the output above for error details")
                 return False
                 
         except subprocess.TimeoutExpired:
-            self.logger.error(f"Timeout exporting {resource_group} (exceeded 1 hour)")
+            if 'process' in locals():
+                try:
+                    process.kill()
+                except:
+                    pass
+            self.logger.error(f"✗✗ Timeout exporting {resource_group} (exceeded 1 hour)")
             return False
         except FileNotFoundError:
             self.logger.error("aztfexport not found. Make sure it's installed and in PATH")

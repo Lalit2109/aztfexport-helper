@@ -47,9 +47,25 @@ steps:
       pip install -r requirements.txt
     displayName: 'Install Python dependencies'
 
-  # Step 2: Configure Azure authentication using service connection
+  - task: TerraformInstaller@0
+    displayName: 'Install Terraform'
+    inputs:
+      terraformVersion: 'latest'
+
+  # Step 2: Clean previous exports
+  - script: |
+      echo "Cleaning output directory: $(outputDir)"
+      if [ -d "$(outputDir)" ]; then
+        rm -rf "$(outputDir)"
+      fi
+      mkdir -p "$(outputDir)"
+      echo "Output directory is now clean:"
+      ls -la "$(outputDir)" || echo "Directory is empty"
+    displayName: 'Clean export/output directory'
+
+  # Step 3: Configure Azure authentication and run export
   - task: AzureCLI@2
-    displayName: 'Azure Login via Service Connection'
+    displayName: 'Azure Login and Export'
     inputs:
       azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
       scriptType: 'bash'
@@ -59,37 +75,48 @@ steps:
         az account show
         echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
         echo "Logged in to subscription: $(az account show --query name -o tsv)"
-
-  # Step 3: Configure Git
-  - script: |
-      git config --global user.name "Azure Pipelines"
-      git config --global user.email "azure-pipelines@devops.com"
-    displayName: 'Configure Git'
-
-  # Step 4: Set up Azure DevOps authentication for git operations
-  # SYSTEM_ACCESS_TOKEN is automatically available in Azure DevOps pipelines
-  - script: |
-      echo "Setting up Azure DevOps authentication..."
-      echo "##vso[task.setvariable variable=AZURE_DEVOPS_PAT]$(System.AccessToken)"
-    displayName: 'Setup Azure DevOps Token'
+        
+        # Verify Terraform is available
+        echo "Checking Terraform installation..."
+        terraform --version || echo "Warning: Terraform not found in PATH"
+        which terraform || echo "Warning: terraform command not found"
+        
+        # Configure Git
+        git config --global user.name "Azure Pipelines"
+        git config --global user.email "azure-pipelines@devops.com"
+        
+        # Set up environment variables
+        export PUSH_TO_REPOS=$(pushToRepos)
+        export GIT_BRANCH=$(gitBranch)
+        export OUTPUT_DIR=$(outputDir)
+        export LOG_LEVEL=INFO
+        export CONFIG_PATH=$(configPath)
+        export AZURE_DEVOPS_PAT=$(System.AccessToken)
+        export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
+        
+        # Run export
+        echo "Starting Terraform export..."
+        python src/main.py
     env:
       SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
-
-  # Step 5: Run export
-  - script: |
-      echo "Starting Terraform export..."
-      export PUSH_TO_REPOS=$(pushToRepos)
-      export GIT_BRANCH=$(gitBranch)
-      export OUTPUT_DIR=$(outputDir)
-      export LOG_LEVEL=INFO
-      python src/main.py
-    displayName: 'Export Azure Resources to Terraform'
-    env:
-      SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
-      AZURE_DEVOPS_PAT: $(System.AccessToken)
-      CONFIG_PATH: $(configPath)
 
   # Step 6: Publish export results as artifacts
+  - script: |
+      # Ensure output directory exists
+      if [ ! -d "$(outputDir)" ]; then
+        echo "Creating output directory: $(outputDir)"
+        mkdir -p "$(outputDir)"
+      fi
+      # Check if directory has content
+      if [ -z "$(ls -A $(outputDir) 2>/dev/null)" ]; then
+        echo "Warning: Output directory is empty, creating placeholder"
+        echo "No exports completed" > "$(outputDir)/README.txt"
+      fi
+      echo "Output directory contents:"
+      ls -la "$(outputDir)" || echo "Directory is empty"
+    displayName: 'Prepare Output Directory'
+    continueOnError: true
+
   - task: PublishBuildArtifacts@1
     displayName: 'Publish Export Results'
     inputs:
@@ -101,10 +128,10 @@ steps:
   # Step 7: Generate summary report
   - script: |
       if [ -f "$(outputDir)/export_results.json" ]; then
-        echo "##vso[task.logissue type=command]##[section]Export Summary"
-        echo "```json"
-        cat $(outputDir)/export_results.json | python -m json.tool
-        echo "```"
+        echo "##[section]Export Summary"
+        echo '```json'
+        cat "$(outputDir)/export_results.json" | python -m json.tool
+        echo '```'
       else
         echo "Export results file not found"
       fi

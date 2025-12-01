@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
+from urllib.parse import quote, urlparse, urlunparse
 from logger import get_logger
 
 
@@ -23,7 +24,8 @@ class GitManager:
         """Get repository URL for a subscription"""
         repo_url = subscription.get('repo_url')
         if repo_url:
-            return repo_url
+            # URL encode spaces and special characters in the URL
+            return self._encode_repo_url(repo_url)
         
         repo_name = subscription.get('repo_name')
         if not repo_name:
@@ -33,9 +35,36 @@ class GitManager:
         project = self.azure_devops_config.get('project')
         
         if org and project:
-            return f"https://dev.azure.com/{org}/{project}/_git/{repo_name}"
+            # URL encode org, project, and repo_name
+            encoded_org = quote(org, safe='')
+            encoded_project = quote(project, safe='')
+            encoded_repo = quote(repo_name, safe='')
+            return f"https://dev.azure.com/{encoded_org}/{encoded_project}/_git/{encoded_repo}"
         
         return None
+    
+    def _encode_repo_url(self, url: str) -> str:
+        """URL encode spaces and special characters in repository URL"""
+        try:
+            parsed = urlparse(url)
+            # Encode path components
+            path_parts = parsed.path.split('/')
+            encoded_parts = [quote(part, safe='') for part in path_parts]
+            encoded_path = '/'.join(encoded_parts)
+            
+            # Reconstruct URL with encoded path
+            encoded_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                encoded_path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment
+            ))
+            return encoded_url
+        except Exception:
+            # Fallback: simple replacement for spaces
+            return url.replace(' ', '%20')
     
     def _get_pat_token(self) -> Optional[str]:
         """Get Azure DevOps PAT token from environment"""
@@ -280,7 +309,7 @@ resource-group-name/
             self.logger.error(f"Failed to commit changes: {e.stderr.decode()}")
             return False
     
-    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str) -> bool:
+    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str, repo_name: str = None) -> bool:
         """Push changes to remote repository"""
         pat_token = self._get_pat_token()
         if not pat_token:
@@ -288,27 +317,45 @@ resource-group-name/
             return False
         
         try:
+            # The repo_url is already URL-encoded from _get_repo_url()
+            # We just need to add authentication without re-encoding
+            
+            # Update remote URL with authentication
             if 'dev.azure.com' in repo_url:
-                org = self.azure_devops_config.get('organization')
-                if org and f'https://dev.azure.com/{org}' in repo_url:
-                    repo_url_with_auth = repo_url.replace(
-                        f'https://dev.azure.com/{org}',
-                        f'https://{pat_token}@dev.azure.com/{org}'
-                    )
+                # Parse the URL to extract org
+                parsed = urlparse(repo_url)
+                path_parts = [p for p in parsed.path.split('/') if p]
+                
+                # Extract org from path (first part after /)
+                if len(path_parts) > 0:
+                    # Decode to get original org name for auth URL construction
+                    org_encoded = path_parts[0]
+                    # Build auth URL with PAT token
+                    auth_url = f'https://{pat_token}@dev.azure.com'
+                    # Replace the scheme and netloc with authenticated version
+                    repo_url_with_auth = repo_url.replace('https://dev.azure.com', auth_url)
                 else:
-                    repo_url_with_auth = repo_url.replace(
-                        'https://dev.azure.com',
-                        f'https://{pat_token}@dev.azure.com'
-                    )
+                    repo_url_with_auth = repo_url.replace('https://dev.azure.com', f'https://{pat_token}@dev.azure.com')
             else:
                 repo_url_with_auth = repo_url
             
+            # Don't re-encode - the URL is already properly encoded from _get_repo_url()
+            # Update remote URL with authenticated URL (already encoded)
+            subprocess.run(
+                ['git', 'remote', 'set-url', 'origin', repo_url_with_auth],
+                cwd=str(repo_path),
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            
+            # Push with authentication
             result = subprocess.run(
                 ['git', 'push', '-u', 'origin', branch, '--force'],
                 cwd=str(repo_path),
                 capture_output=True,
                 text=True,
-                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'}
+                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
             )
             
             if result.returncode == 0:
@@ -317,9 +364,27 @@ resource-group-name/
             else:
                 error_msg = result.stderr or result.stdout
                 self.logger.error(f"Failed to push: {error_msg}")
+                
+                # Check if repository doesn't exist
+                if 'not found' in error_msg.lower() or 'does not exist' in error_msg.lower():
+                    self.logger.error("")
+                    self.logger.error("Repository does not exist in Azure DevOps.")
+                    self.logger.error("Please create the repository first:")
+                    self.logger.error(f"  Organization: {self.azure_devops_config.get('organization', 'N/A')}")
+                    self.logger.error(f"  Project: {self.azure_devops_config.get('project', 'N/A')}")
+                    if repo_name:
+                        self.logger.error(f"  Repository: {repo_name}")
+                    self.logger.error("")
+                    self.logger.error("You can create it via:")
+                    self.logger.error("  - Azure DevOps Portal: Repos > New Repository")
+                    self.logger.error("  - Azure CLI: az repos create --name <repo-name> --project <project>")
+                
                 return False
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to push to remote: {str(e)}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error during git push: {str(e)}")
             return False
     
     def push_to_repo(
@@ -355,7 +420,8 @@ resource-group-name/
         if not self._commit_changes(export_path, subscription):
             return False
         
-        if not self._push_to_remote(export_path, branch, repo_url):
+        repo_name = subscription.get('repo_name', 'N/A')
+        if not self._push_to_remote(export_path, branch, repo_url, repo_name):
             return False
         
         self.logger.success(f"Successfully pushed to repository: {repo_url}")

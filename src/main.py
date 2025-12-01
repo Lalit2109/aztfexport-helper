@@ -86,37 +86,51 @@ def main():
         logger.error("No subscriptions were exported. Check your configuration.")
         sys.exit(1)
     
+    # Only push to git if export was successful
     push_to_repos = os.getenv('PUSH_TO_REPOS', 'false').lower() == 'true'
     push_to_repos = push_to_repos or export_manager.config.get('git', {}).get('push_to_repos', False)
     
     if push_to_repos:
-        logger.info("")
-        logger.info("=" * 70)
-        logger.info("Pushing to Git Repositories")
-        logger.info("=" * 70)
+        # Check if any exports were successful
+        total_successful = sum(r.get('successful_rgs', 0) for r in results.values())
         
-        from pathlib import Path
-        subscriptions = export_manager.config.get('subscriptions', [])
-        
-        for sub in subscriptions:
-            if not sub.get('export_enabled', True):
-                continue
+        if total_successful == 0:
+            logger.warning("No successful exports found. Skipping git push.")
+        else:
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Pushing to Git Repositories")
+            logger.info("=" * 70)
             
-            subscription_name = sub.get('name', sub.get('id'))
-            sub_dir = Path(export_manager.base_dir) / export_manager._sanitize_name(subscription_name)
+            subscriptions = export_manager.config.get('subscriptions', [])
             
-            if sub_dir.exists():
-                logger.info(f"Pushing {subscription_name} to repository...")
-                try:
-                    success = export_manager.push_subscription_to_git(sub, sub_dir)
-                    if success:
-                        logger.success(f"Successfully pushed {subscription_name}")
+            for sub in subscriptions:
+                if not sub.get('export_enabled', True):
+                    continue
+                
+                subscription_id = sub.get('id')
+                subscription_result = results.get(subscription_id)
+                
+                # Only push if this subscription had successful exports
+                if subscription_result and subscription_result.get('successful_rgs', 0) > 0:
+                    subscription_name = sub.get('name', sub.get('id'))
+                    sub_dir = Path(export_manager.base_dir) / export_manager._sanitize_name(subscription_name)
+                    
+                    if sub_dir.exists():
+                        logger.info(f"Pushing {subscription_name} to repository...")
+                        try:
+                            success = export_manager.push_subscription_to_git(sub, sub_dir)
+                            if success:
+                                logger.success(f"Successfully pushed {subscription_name}")
+                            else:
+                                logger.error(f"Failed to push {subscription_name}")
+                        except Exception as e:
+                            logger.error(f"Error pushing {subscription_name}: {str(e)}")
                     else:
-                        logger.error(f"Failed to push {subscription_name}")
-                except Exception as e:
-                    logger.error(f"Error pushing {subscription_name}: {str(e)}")
-            else:
-                logger.warning(f"Export directory not found for {subscription_name}: {sub_dir}")
+                        logger.warning(f"Export directory not found for {subscription_name}: {sub_dir}")
+                else:
+                    subscription_name = sub.get('name', sub.get('id'))
+                    logger.info(f"Skipping git push for {subscription_name} (no successful exports)")
     
     logger.info("")
     logger.info("=" * 70)
