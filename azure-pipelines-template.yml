@@ -1,0 +1,130 @@
+# Template for exporting a single subscription
+# This template is used by the main pipeline with matrix strategy
+
+parameters:
+  - name: subscriptionId
+    type: string
+  - name: subscriptionName
+    type: string
+  - name: configPath
+    type: string
+  - name: outputDir
+    type: string
+  - name: gitBranch
+    type: string
+  - name: pushToRepos
+    type: string
+  - name: azureServiceConnection
+    type: string
+
+jobs:
+  - job: ExportSubscription
+    displayName: 'Export Subscription ${{ parameters.subscriptionName }}'
+    steps:
+      # Step 1: Install prerequisites
+      - task: GoTool@0
+        displayName: 'Install Go (for aztfexport)'
+        inputs:
+          version: '1.21.x'
+
+      - script: |
+          echo "Installing aztfexport..."
+          go install github.com/Azure/aztfexport@latest
+          export PATH=$PATH:$(go env GOPATH)/bin
+          aztfexport --version
+          echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+        displayName: 'Install aztfexport'
+
+      - task: UsePythonVersion@0
+        displayName: 'Setup Python'
+        inputs:
+          versionSpec: '3.10'
+          addToPath: true
+
+      - script: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        displayName: 'Install Python dependencies'
+
+      - task: TerraformInstaller@0
+        displayName: 'Install Terraform'
+        inputs:
+          terraformVersion: 'latest'
+
+      # Step 2: Set subscription-specific output directory
+      - script: |
+          export SUBSCRIPTION_OUTPUT_DIR="${{ parameters.outputDir }}/${{ parameters.subscriptionName }}"
+          mkdir -p "$SUBSCRIPTION_OUTPUT_DIR"
+          echo "##vso[task.setvariable variable=subscriptionOutputDir]$SUBSCRIPTION_OUTPUT_DIR"
+          echo "Subscription output directory: $SUBSCRIPTION_OUTPUT_DIR"
+        displayName: 'Setup Subscription Output Directory'
+        name: SetOutputDir
+
+      # Step 3: Configure Azure authentication and run export
+      - task: AzureCLI@2
+        displayName: 'Azure Login and Export Subscription'
+        inputs:
+          azureSubscription: '${{ parameters.azureServiceConnection }}'
+          scriptType: 'bash'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            echo "Authenticating with Azure..."
+            az account show
+            
+            # Set the subscription for this job
+            echo "Setting subscription to: ${{ parameters.subscriptionId }}"
+            az account set --subscription "${{ parameters.subscriptionId }}"
+            
+            current_sub=$(az account show --query id -o tsv)
+            current_name=$(az account show --query name -o tsv)
+            echo "Current subscription: $current_name ($current_sub)"
+            
+            # Verify Terraform is available
+            echo "Checking Terraform installation..."
+            terraform --version || echo "Warning: Terraform not found in PATH"
+            which terraform || echo "Warning: terraform command not found"
+            
+            # Configure Git
+            git config --global user.name "Azure Pipelines"
+            git config --global user.email "azure-pipelines@devops.com"
+            
+            # Set up environment variables
+            export PUSH_TO_REPOS=${{ parameters.pushToRepos }}
+            export GIT_BRANCH=${{ parameters.gitBranch }}
+            export OUTPUT_DIR=$(subscriptionOutputDir)
+            export LOG_LEVEL=INFO
+            export CONFIG_PATH=${{ parameters.configPath }}
+            export AZURE_DEVOPS_PAT=$(System.AccessToken)
+            export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
+            
+            # Run export for this subscription only
+            echo "Starting Terraform export for subscription: ${{ parameters.subscriptionName }} (${{ parameters.subscriptionId }})"
+            python src/main.py --subscription-id "${{ parameters.subscriptionId }}"
+        env:
+          SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
+
+      # Step 4: Publish subscription-specific results
+      - script: |
+          # Ensure output directory exists
+          if [ ! -d "$(subscriptionOutputDir)" ]; then
+            echo "Creating output directory: $(subscriptionOutputDir)"
+            mkdir -p "$(subscriptionOutputDir)"
+          fi
+          # Check if directory has content
+          if [ -z "$(ls -A $(subscriptionOutputDir) 2>/dev/null)" ]; then
+            echo "Warning: Output directory is empty, creating placeholder"
+            echo "No exports completed for ${{ parameters.subscriptionName }}" > "$(subscriptionOutputDir)/README.txt"
+          fi
+          echo "Output directory contents:"
+          ls -la "$(subscriptionOutputDir)" || echo "Directory is empty"
+        displayName: 'Prepare Subscription Output Directory'
+        continueOnError: true
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Subscription Export Results'
+        inputs:
+          pathToPublish: '$(subscriptionOutputDir)'
+          artifactName: 'terraform-exports-${{ parameters.subscriptionName }}'
+          publishLocation: 'Container'
+        condition: always()
+
