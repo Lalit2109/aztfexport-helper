@@ -129,9 +129,9 @@ steps:
   - script: |
       if [ -f "$(outputDir)/export_results.json" ]; then
         echo "##[section]Export Summary"
-        echo "```json"
-        cat $(outputDir)/export_results.json | python -m json.tool
-        echo "```"
+        echo '```json'
+        cat "$(outputDir)/export_results.json" | python -m json.tool
+        echo '```'
       else
         echo "Export results file not found"
       fi

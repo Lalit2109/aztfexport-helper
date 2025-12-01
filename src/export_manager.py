@@ -215,7 +215,8 @@ class ExportManager:
                     'query',
                     '--subscription-id', subscription_id,
                     '--output-dir', str(output_path),
-                    '--non-interactive'
+                    '--non-interactive',
+                    '--plain-ui'
                 ]
                 
                 if rg_name:
@@ -235,7 +236,8 @@ class ExportManager:
                 'resource-group',
                 '--subscription-id', subscription_id,
                 '--output-dir', str(output_path),
-                '--non-interactive'
+                '--non-interactive',
+                '--plain-ui'
             ]
             
             resource_types = self.config.get('aztfexport', {}).get('resource_types', [])
