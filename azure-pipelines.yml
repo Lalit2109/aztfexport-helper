@@ -52,7 +52,18 @@ steps:
     inputs:
       terraformVersion: 'latest'
 
-  # Step 2: Configure Azure authentication and run export
+  # Step 2: Clean previous exports
+  - script: |
+      echo "Cleaning output directory: $(outputDir)"
+      if [ -d "$(outputDir)" ]; then
+        rm -rf "$(outputDir)"
+      fi
+      mkdir -p "$(outputDir)"
+      echo "Output directory is now clean:"
+      ls -la "$(outputDir)" || echo "Directory is empty"
+    displayName: 'Clean export/output directory'
+
+  # Step 3: Configure Azure authentication and run export
   - task: AzureCLI@2
     displayName: 'Azure Login and Export'
     inputs:
@@ -117,7 +128,7 @@ steps:
   # Step 7: Generate summary report
   - script: |
       if [ -f "$(outputDir)/export_results.json" ]; then
-        echo "##vso[task.logissue type=command]##[section]Export Summary"
+        echo "##[section]Export Summary"
         echo "```json"
         cat $(outputDir)/export_results.json | python -m json.tool
         echo "```"
