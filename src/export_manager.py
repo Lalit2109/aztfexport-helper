@@ -512,7 +512,9 @@ class ExportManager:
         exclude_subscriptions_raw = self.config.get('exclude_subscriptions', {})
         # Flatten prod and non-prod lists into single list
         if isinstance(exclude_subscriptions_raw, dict):
-            exclude_subscriptions = exclude_subscriptions_raw.get('prod', []) + exclude_subscriptions_raw.get('non-prod', [])
+            prod_list = exclude_subscriptions_raw.get('prod') or []
+            non_prod_list = exclude_subscriptions_raw.get('non-prod') or []
+            exclude_subscriptions = (prod_list if isinstance(prod_list, list) else []) + (non_prod_list if isinstance(non_prod_list, list) else [])
         else:
             # Backward compatibility: if it's a list, use it directly
             exclude_subscriptions = exclude_subscriptions_raw if isinstance(exclude_subscriptions_raw, list) else []
@@ -521,9 +523,12 @@ class ExportManager:
         
         for sub in subscriptions:
             subscription_id = sub.get('id')
+            subscription_name = sub.get('name', subscription_id)
             
-            if subscription_id in exclude_subscriptions:
-                self.logger.info(f"Skipping subscription {subscription_id} (in exclude_subscriptions list)")
+            # Check exclusion by ID or name
+            is_excluded = subscription_id in exclude_subscriptions or subscription_name in exclude_subscriptions
+            if is_excluded:
+                self.logger.info(f"Skipping subscription {subscription_name} ({subscription_id}) (in exclude_subscriptions list)")
                 continue
             
             try:

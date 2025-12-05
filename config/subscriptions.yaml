@@ -1,13 +1,14 @@
 # Azure Subscriptions Configuration
 
 # Exclude subscriptions from export (all others are exported)
+# Can exclude by subscription ID or subscription name
 exclude_subscriptions:
-  prod:
-    # - "subscription-id-prod-1"
-    # - "subscription-id-prod-2"
-  non-prod:
-    # - "subscription-id-non-prod-1"
-    # - "subscription-id-non-prod-2"
+  prod: []
+    # - "subscription-id-prod-1"  # Exclude by ID
+    # - "Production Subscription Name"  # Exclude by name
+  non-prod: []
+    # - "subscription-id-non-prod-1"  # Exclude by ID
+    # - "Development Subscription Name"  # Exclude by name
 
 # Global resource group exclusions (wildcards supported: *, ?)
 global_excludes:
@@ -51,7 +52,6 @@ aztfexport:
 azure_devops:
   organization: "your-org"
   project: "your-project"
-  service_connection: "Azure-ServiceConnection"
 
 # Git configuration
 git:
