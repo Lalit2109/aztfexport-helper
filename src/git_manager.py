@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urlparse
 from logger import get_logger
 
 
@@ -21,20 +21,17 @@ class GitManager:
         self.git_config = config.get('git', {})
         
     def _get_repo_url(self, subscription: Dict[str, Any]) -> Optional[str]:
-        """Get repository URL for a subscription"""
-        repo_url = subscription.get('repo_url')
-        if repo_url:
-            # URL encode spaces and special characters in the URL
-            return self._encode_repo_url(repo_url)
-        
-        repo_name = subscription.get('repo_name')
-        if not repo_name:
+        """Get repository URL for a subscription using subscription name"""
+        subscription_name = subscription.get('name')
+        if not subscription_name:
             return None
         
         org = self.azure_devops_config.get('organization')
         project = self.azure_devops_config.get('project')
         
         if org and project:
+            # Sanitize subscription name for use as repo name (same logic as export_manager)
+            repo_name = self._sanitize_name(subscription_name)
             # URL encode org, project, and repo_name
             encoded_org = quote(org, safe='')
             encoded_project = quote(project, safe='')
@@ -43,28 +40,12 @@ class GitManager:
         
         return None
     
-    def _encode_repo_url(self, url: str) -> str:
-        """URL encode spaces and special characters in repository URL"""
-        try:
-            parsed = urlparse(url)
-            # Encode path components
-            path_parts = parsed.path.split('/')
-            encoded_parts = [quote(part, safe='') for part in path_parts]
-            encoded_path = '/'.join(encoded_parts)
-            
-            # Reconstruct URL with encoded path
-            encoded_url = urlunparse((
-                parsed.scheme,
-                parsed.netloc,
-                encoded_path,
-                parsed.params,
-                parsed.query,
-                parsed.fragment
-            ))
-            return encoded_url
-        except Exception:
-            # Fallback: simple replacement for spaces
-            return url.replace(' ', '%20')
+    def _sanitize_name(self, name: str) -> str:
+        """Sanitize name for filesystem/repository (same logic as export_manager)"""
+        import re
+        name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+        return name.lower()
+    
     
     def _get_pat_token(self) -> Optional[str]:
         """Get Azure DevOps PAT token from environment"""
@@ -176,7 +157,6 @@ This repository contains Terraform code for Azure resources exported from subscr
 
 - **Subscription ID**: `{subscription.get('id', 'N/A')}`
 - **Subscription Name**: {subscription.get('name', 'N/A')}
-- **Environment**: {subscription.get('environment', 'N/A')}
 
 ## Structure
 
@@ -309,7 +289,7 @@ resource-group-name/
             self.logger.error(f"Failed to commit changes: {e.stderr.decode()}")
             return False
     
-    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str, repo_name: str = None) -> bool:
+    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str) -> bool:
         """Push changes to remote repository"""
         pat_token = self._get_pat_token()
         if not pat_token:
@@ -372,8 +352,7 @@ resource-group-name/
                     self.logger.error("Please create the repository first:")
                     self.logger.error(f"  Organization: {self.azure_devops_config.get('organization', 'N/A')}")
                     self.logger.error(f"  Project: {self.azure_devops_config.get('project', 'N/A')}")
-                    if repo_name:
-                        self.logger.error(f"  Repository: {repo_name}")
+                    self.logger.error(f"  Repository: {repo_url.split('/_git/')[-1] if '/_git/' in repo_url else 'N/A'}")
                     self.logger.error("")
                     self.logger.error("You can create it via:")
                     self.logger.error("  - Azure DevOps Portal: Repos > New Repository")
@@ -420,8 +399,7 @@ resource-group-name/
         if not self._commit_changes(export_path, subscription):
             return False
         
-        repo_name = subscription.get('repo_name', 'N/A')
-        if not self._push_to_remote(export_path, branch, repo_url, repo_name):
+        if not self._push_to_remote(export_path, branch, repo_url):
             return False
         
         self.logger.success(f"Successfully pushed to repository: {repo_url}")

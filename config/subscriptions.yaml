@@ -42,30 +42,24 @@ logging:
 subscriptions:
   - id: "subscription-id-1"
     name: "Production Subscription 1"
-    environment: "prod"
     # export_enabled: true  # Optional: set to false to exclude this subscription
-    # Repository configuration (optional)
-    # repo_name: "terraform-prod-sub-1"  # Repository name (will be created if doesn't exist)
-    # repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"  # Full repository URL
-    # branch: "main"  # Override default branch
+    # branch: "main"  # Override default branch (optional)
     
   - id: "subscription-id-2"
     name: "Development Subscription 1"
-    environment: "dev"
     # export_enabled: true  # Optional: set to false to exclude this subscription
-    # repo_name: "terraform-dev-sub-1"
-    # repo_url: "https://dev.azure.com/org/project/_git/terraform-dev-sub-1"
-    # branch: "develop"  # Different branch for dev
+    # branch: "develop"  # Override default branch (optional)
     
   # Add remaining 33 subscriptions here
   # Note: By default, all subscriptions are exported unless:
   #   - export_enabled: false is set, OR
   #   - subscription ID is in exclude_subscriptions list above
+  # The repository name in Azure DevOps will be automatically derived from the subscription name
   # Template:
   # - id: "subscription-id-X"
-  #   name: "Subscription Name"
-  #   environment: "prod|dev|staging"
+  #   name: "Subscription Name"  # This name will be used as the repository name in ADO
   #   # export_enabled: true|false  # Optional, defaults to true
+  #   # branch: "main"  # Optional, defaults to main
 
 # aztfexport configuration
 aztfexport:

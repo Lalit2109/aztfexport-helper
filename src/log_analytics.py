@@ -107,7 +107,6 @@ class LogAnalyticsSender:
         self,
         subscription_id: str,
         subscription_name: str,
-        environment: str,
         status: str,
         start_time: datetime,
         end_time: datetime,
@@ -122,7 +121,6 @@ class LogAnalyticsSender:
         Args:
             subscription_id: Azure subscription ID
             subscription_name: Subscription display name
-            environment: Environment (prod/dev/staging)
             status: Status (success/failed)
             start_time: Export start time
             end_time: Export end time
@@ -141,7 +139,6 @@ class LogAnalyticsSender:
             "TimeGenerated": start_time.isoformat() + "Z",
             "SubscriptionId": subscription_id,
             "SubscriptionName": subscription_name,
-            "Environment": environment,
             "Status": status,
             "StartTime": start_time.isoformat() + "Z",
             "EndTime": end_time.isoformat() + "Z",

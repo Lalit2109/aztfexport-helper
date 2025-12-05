@@ -103,7 +103,6 @@ def main():
     for sub in subscriptions:
         subscription_id = sub.get('id')
         subscription_name = sub.get('name', subscription_id)
-        environment = sub.get('environment', 'unknown')
         
         # Check if subscription should be excluded
         export_enabled = sub.get('export_enabled', True)  # Default to True
@@ -177,7 +176,6 @@ def main():
                 log_analytics.send_subscription_backup_status(
                     subscription_id=subscription_id,
                     subscription_name=subscription_name,
-                    environment=environment,
                     status=status,
                     start_time=start_time,
                     end_time=end_time,
@@ -210,7 +208,6 @@ def main():
                 log_analytics.send_subscription_backup_status(
                     subscription_id=subscription_id,
                     subscription_name=subscription_name,
-                    environment=environment,
                     status="failed",
                     start_time=start_time,
                     end_time=end_time,
