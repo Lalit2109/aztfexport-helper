@@ -43,23 +43,21 @@ subscriptions:
   - id: "subscription-id-1"
     name: "Production Subscription 1"
     # export_enabled: true  # Optional: set to false to exclude this subscription
-    # branch: "main"  # Override default branch (optional)
     
   - id: "subscription-id-2"
     name: "Development Subscription 1"
     # export_enabled: true  # Optional: set to false to exclude this subscription
-    # branch: "develop"  # Override default branch (optional)
     
   # Add remaining 33 subscriptions here
   # Note: By default, all subscriptions are exported unless:
   #   - export_enabled: false is set, OR
   #   - subscription ID is in exclude_subscriptions list above
   # The repository name in Azure DevOps will be automatically derived from the subscription name
+  # The branch name is configured globally in the git section (default: main)
   # Template:
   # - id: "subscription-id-X"
   #   name: "Subscription Name"  # This name will be used as the repository name in ADO
   #   # export_enabled: true|false  # Optional, defaults to true
-  #   # branch: "main"  # Optional, defaults to main
 
 # aztfexport configuration
 aztfexport:

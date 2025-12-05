@@ -55,9 +55,8 @@ class GitManager:
         """Get branch name for subscription with date and time"""
         from datetime import datetime
         
-        # Get base branch name
+        # Get base branch name from environment variable or config (default: main)
         base_branch = (
-            subscription.get('branch') or 
             os.getenv('GIT_BRANCH') or 
             self.git_config.get('branch', 'main')
         )
