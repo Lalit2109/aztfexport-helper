@@ -76,19 +76,27 @@ def main():
     logger.info("Exporting Azure resources...")
     logger.info("-" * 70)
     
-    # Initialize Log Analytics sender
     log_analytics = LogAnalyticsSender()
-    
-    # Check if git push is enabled
     push_to_repos = os.getenv('PUSH_TO_REPOS', 'false').lower() == 'true'
     push_to_repos = push_to_repos or export_manager.config.get('git', {}).get('push_to_repos', False)
     
-    # Get subscription list and exclude list
-    subscriptions = export_manager.config.get('subscriptions', [])
-    exclude_subscriptions = export_manager.config.get('exclude_subscriptions', [])
+    logger.info("Discovering subscriptions from Azure...")
+    subscriptions = export_manager.get_subscriptions_from_azure()
+    
+    if not subscriptions:
+        logger.error("No subscriptions found. Check Azure CLI authentication and permissions.")
+        sys.exit(1)
+    
+    exclude_subscriptions_raw = export_manager.config.get('exclude_subscriptions', {})
+    # Flatten prod and non-prod lists into single list
+    if isinstance(exclude_subscriptions_raw, dict):
+        exclude_subscriptions = exclude_subscriptions_raw.get('prod', []) + exclude_subscriptions_raw.get('non-prod', [])
+    else:
+        # Backward compatibility: if it's a list, use it directly
+        exclude_subscriptions = exclude_subscriptions_raw if isinstance(exclude_subscriptions_raw, list) else []
     create_rg_folders = export_manager.config.get('output', {}).get('create_rg_folders', True)
     
-    # Install aztfexport once
+    logger.info(f"Found {len(subscriptions)} subscription(s), {len(exclude_subscriptions)} in exclude list")
     try:
         export_manager._install_aztfexport()
     except Exception as e:
@@ -99,24 +107,14 @@ def main():
     
     results = {}
     
-    # Export each subscription individually and push immediately after
     for sub in subscriptions:
         subscription_id = sub.get('id')
         subscription_name = sub.get('name', subscription_id)
         
-        # Check if subscription should be excluded
-        export_enabled = sub.get('export_enabled', True)  # Default to True
-        is_in_exclude_list = subscription_id in exclude_subscriptions
-        
-        if not export_enabled:
-            logger.info(f"Skipping subscription {subscription_id} (export_enabled: false)")
-            continue
-        
-        if is_in_exclude_list:
+        if subscription_id in exclude_subscriptions:
             logger.info(f"Skipping subscription {subscription_id} (in exclude_subscriptions list)")
             continue
         
-        # Track timing for this subscription
         start_time = datetime.utcnow()
         subscription_result = None
         git_push_status = "skipped"
@@ -128,13 +126,10 @@ def main():
             logger.info(f"Processing subscription: {subscription_name}")
             logger.info("=" * 70)
             
-            # Export subscription
             subscription_result = export_manager.export_subscription(sub, create_rg_folders)
             results[subscription_id] = subscription_result
-            
             end_time = datetime.utcnow()
             
-            # Determine status
             if subscription_result.get('successful_rgs', 0) > 0:
                 status = "success"
             elif subscription_result.get('error'):
@@ -143,7 +138,6 @@ def main():
             else:
                 status = "failed" if subscription_result.get('failed_rgs', 0) > 0 else "success"
             
-            # Push to git if enabled and there are successful exports
             if push_to_repos and subscription_result.get('successful_rgs', 0) > 0:
                 logger.info("")
                 logger.info("=" * 70)
@@ -171,7 +165,6 @@ def main():
             elif push_to_repos:
                 logger.info(f"Skipping git push for {subscription_name} (no successful exports)")
             
-            # Send to Log Analytics (wrapped in try-except to prevent failures from affecting export result)
             try:
                 log_analytics.send_subscription_backup_status(
                     subscription_id=subscription_id,
@@ -186,9 +179,7 @@ def main():
                     error_message=error_message
                 )
             except Exception as la_error:
-                # Log Analytics failure should not affect export result
                 logger.warning(f"Failed to send data to Log Analytics for {subscription_name}: {str(la_error)}")
-                logger.info("Export result is preserved despite Log Analytics failure")
             
         except Exception as e:
             end_time = datetime.utcnow()
@@ -203,7 +194,6 @@ def main():
                 'error': error_message
             }
             
-            # Send failure to Log Analytics (wrapped in try-except to prevent double failure)
             try:
                 log_analytics.send_subscription_backup_status(
                     subscription_id=subscription_id,
@@ -220,7 +210,6 @@ def main():
             except Exception as la_error:
                 logger.warning(f"Failed to send failure status to Log Analytics for {subscription_name}: {str(la_error)}")
             
-            # Continue with next subscription instead of exiting
             logger.warning(f"Continuing with next subscription after error in {subscription_name}")
     
     if not results:

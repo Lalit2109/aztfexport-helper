@@ -40,14 +40,11 @@ aztfexport:
     - "Microsoft.Compute/virtualMachines"
     - "Microsoft.Network/virtualNetworks"
 
-# Example: Full subscription configuration with exclusions
+# Example: Full subscription configuration
 subscriptions:
   - id: "subscription-id-1"
     name: "Production Subscription 1"
-    environment: "prod"
-    repo_name: "terraform-prod-sub-1"
-    repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"
-    export_enabled: true
+    # Repository name will be automatically derived from subscription name
 
 aztfexport:
   exclude_resource_groups:

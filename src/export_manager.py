@@ -29,7 +29,6 @@ class ExportManager:
         set_log_level(log_level)
         self.logger = get_logger()
         
-        # Check OUTPUT_DIR environment variable first, then config
         self.base_dir = os.getenv('OUTPUT_DIR') or self.config.get('output', {}).get('base_dir', './exports')
         self.az_cli_path = self._find_az_cli()
     
@@ -110,6 +109,55 @@ class ExportManager:
             self.logger.info("  Option 1: go install github.com/Azure/aztfexport@latest")
             self.logger.info("  Option 2: Download from https://github.com/Azure/aztfexport/releases")
             raise
+    
+    def get_subscriptions_from_azure(self) -> List[Dict[str, Any]]:
+        """Get all subscriptions accessible to the current Azure CLI account"""
+        subscriptions = []
+        
+        try:
+            result = subprocess.run(
+                [self.az_cli_path, 'account', 'list', '--query', '[].{id:id, name:name, state:state}', '--output', 'json'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True
+            )
+            
+            subs_data = json.loads(result.stdout)
+            
+            for sub in subs_data:
+                sub_id = sub.get('id', '').strip()
+                sub_name = sub.get('name', '').strip()
+                sub_state = sub.get('state', '').strip()
+                
+                # Only include enabled subscriptions
+                if sub_id and sub_state.lower() == 'enabled':
+                    subscriptions.append({
+                        'id': sub_id,
+                        'name': sub_name or sub_id  # Use ID as name if name is missing
+                    })
+                elif sub_id:
+                    self.logger.debug(f"Skipping subscription {sub_id} (state: {sub_state})")
+            
+            self.logger.success(f"Found {len(subscriptions)} enabled subscription(s) accessible to this account")
+            return subscriptions
+            
+        except subprocess.TimeoutExpired:
+            self.logger.error("Timeout listing subscriptions (exceeded 30 seconds)")
+            return []
+        except FileNotFoundError:
+            self.logger.error("Azure CLI not found. Please install: https://docs.microsoft.com/cli/azure/install-azure-cli")
+            return []
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Azure CLI command failed: {e.stderr}")
+            self.logger.info("Make sure you're logged in: az login")
+            return []
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse Azure CLI output: {str(e)}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Error listing subscriptions: {str(e)}")
+            return []
     
     def _get_resource_groups(self, subscription_id: str) -> List[str]:
         """Get list of resource groups in a subscription using Azure CLI"""
@@ -266,65 +314,48 @@ class ExportManager:
             env['TERM'] = 'dumb'  # Set terminal type to dumb
             env['NO_COLOR'] = '1'  # Disable color output
             
-            # Use script command to emulate TTY if available (required for aztfexport)
-            # This prevents "open /dev/tty: no such device or address" errors
+            # Use script to emulate TTY (prevents aztfexport TTY errors)
             import shutil
             script_cmd = shutil.which('script')
             
             if script_cmd:
-                # Use script to create a pseudo-TTY
-                # Build command string with proper quoting
                 cmd_str = ' '.join(f'"{arg}"' if ' ' in arg or '"' in arg else arg for arg in cmd)
-                script_wrapper = [
-                    script_cmd,
-                    '-q',  # Quiet mode - suppresses script's own output
-                    '-e',  # Return exit code
-                    '-c',  # Command to run
-                    cmd_str
-                ]
+                script_wrapper = [script_cmd, '-q', '-e', '-c', cmd_str]
                 final_cmd = script_wrapper
             else:
-                # Fallback: run directly (may fail with TTY errors)
                 final_cmd = cmd
             
-            # Use Popen for real-time output streaming
             self.logger.info(f"Starting export for {resource_group}...")
             process = subprocess.Popen(
                 final_cmd,
                 cwd=str(Path(self.base_dir).resolve()),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # Merge stderr into stdout to capture all output
+                stderr=subprocess.STDOUT,
                 env=env,
                 text=True,
-                bufsize=1,  # Line buffered for real-time output
+                bufsize=1,
                 universal_newlines=True
             )
             
-            # Stream output in real-time with deduplication
             output_lines = []
-            seen_lines = set()  # Track seen lines to prevent duplicates
+            seen_lines = set()
             
             try:
                 import sys
                 for line in iter(process.stdout.readline, ''):
                     if line:
                         line = line.rstrip()
-                        # Only add to output_lines if not a duplicate
                         if line not in seen_lines:
                             seen_lines.add(line)
                             output_lines.append(line)
-                            # Print directly for real-time visibility in pipeline
                             sys.stdout.write(line + '\n')
                             sys.stdout.flush()
             finally:
                 process.stdout.close()
                 exit_code = process.wait(timeout=3600)
             
-            # Store full output for error analysis
             full_output = '\n'.join(output_lines)
-            
-            # Clear completion message - make it very visible
             self.logger.info("")
             if exit_code == 0:
                 self.logger.info("=" * 60)
@@ -335,7 +366,6 @@ class ExportManager:
                 self.logger.error(f"✗ EXPORT FAILED for {resource_group} (exit code: {exit_code})")
                 self.logger.info("=" * 60)
             
-            # Check return code
             if exit_code == 0:
                 tf_files_direct = list(output_path.glob('*.tf'))
                 tf_files_recursive = list(output_path.rglob('*.tf'))
@@ -463,8 +493,7 @@ class ExportManager:
     def export_all_subscriptions(self) -> Dict[str, Any]:
         """Export all enabled subscriptions
         
-        By default, all subscriptions are enabled unless:
-        - export_enabled: false is set in subscription config, OR
+        By default, all subscriptions accessible via Azure CLI are exported unless:
         - subscription ID is in exclude_subscriptions list
         """
         try:
@@ -474,24 +503,26 @@ class ExportManager:
             return {}
         
         Path(self.base_dir).mkdir(parents=True, exist_ok=True)
-        subscriptions = self.config.get('subscriptions', [])
-        exclude_subscriptions = self.config.get('exclude_subscriptions', [])
+        
+        subscriptions = self.get_subscriptions_from_azure()
+        if not subscriptions:
+            self.logger.error("No subscriptions found. Check Azure CLI authentication and permissions.")
+            return {}
+        
+        exclude_subscriptions_raw = self.config.get('exclude_subscriptions', {})
+        # Flatten prod and non-prod lists into single list
+        if isinstance(exclude_subscriptions_raw, dict):
+            exclude_subscriptions = exclude_subscriptions_raw.get('prod', []) + exclude_subscriptions_raw.get('non-prod', [])
+        else:
+            # Backward compatibility: if it's a list, use it directly
+            exclude_subscriptions = exclude_subscriptions_raw if isinstance(exclude_subscriptions_raw, list) else []
         create_rg_folders = self.config.get('output', {}).get('create_rg_folders', True)
         all_results = {}
         
         for sub in subscriptions:
             subscription_id = sub.get('id')
             
-            # Check if subscription should be excluded
-            # Exclude if: export_enabled is explicitly False OR subscription ID is in exclude list
-            export_enabled = sub.get('export_enabled', True)  # Default to True
-            is_in_exclude_list = subscription_id in exclude_subscriptions
-            
-            if not export_enabled:
-                self.logger.info(f"Skipping subscription {subscription_id} (export_enabled: false)")
-                continue
-            
-            if is_in_exclude_list:
+            if subscription_id in exclude_subscriptions:
                 self.logger.info(f"Skipping subscription {subscription_id} (in exclude_subscriptions list)")
                 continue
             

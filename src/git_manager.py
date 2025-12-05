@@ -30,9 +30,7 @@ class GitManager:
         project = self.azure_devops_config.get('project')
         
         if org and project:
-            # Sanitize subscription name for use as repo name (same logic as export_manager)
             repo_name = self._sanitize_name(subscription_name)
-            # URL encode org, project, and repo_name
             encoded_org = quote(org, safe='')
             encoded_project = quote(project, safe='')
             encoded_repo = quote(repo_name, safe='')
@@ -41,7 +39,7 @@ class GitManager:
         return None
     
     def _sanitize_name(self, name: str) -> str:
-        """Sanitize name for filesystem/repository (same logic as export_manager)"""
+        """Sanitize name for filesystem/repository"""
         import re
         name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
         return name.lower()
@@ -55,13 +53,7 @@ class GitManager:
         """Get branch name for subscription with date and time"""
         from datetime import datetime
         
-        # Get base branch name from environment variable or config (default: main)
-        base_branch = (
-            os.getenv('GIT_BRANCH') or 
-            self.git_config.get('branch', 'main')
-        )
-        
-        # Format: YYYY-MM-DD-HHMM
+        base_branch = os.getenv('GIT_BRANCH') or self.git_config.get('branch', 'main')
         date_str = datetime.now().strftime('%Y-%m-%d-%H%M')
         branch_name = f"{base_branch}-{date_str}"
         
@@ -296,30 +288,18 @@ resource-group-name/
             return False
         
         try:
-            # The repo_url is already URL-encoded from _get_repo_url()
-            # We just need to add authentication without re-encoding
-            
-            # Update remote URL with authentication
             if 'dev.azure.com' in repo_url:
-                # Parse the URL to extract org
                 parsed = urlparse(repo_url)
                 path_parts = [p for p in parsed.path.split('/') if p]
                 
-                # Extract org from path (first part after /)
                 if len(path_parts) > 0:
-                    # Decode to get original org name for auth URL construction
-                    org_encoded = path_parts[0]
-                    # Build auth URL with PAT token
                     auth_url = f'https://{pat_token}@dev.azure.com'
-                    # Replace the scheme and netloc with authenticated version
                     repo_url_with_auth = repo_url.replace('https://dev.azure.com', auth_url)
                 else:
                     repo_url_with_auth = repo_url.replace('https://dev.azure.com', f'https://{pat_token}@dev.azure.com')
             else:
                 repo_url_with_auth = repo_url
             
-            # Don't re-encode - the URL is already properly encoded from _get_repo_url()
-            # Update remote URL with authenticated URL (already encoded)
             subprocess.run(
                 ['git', 'remote', 'set-url', 'origin', repo_url_with_auth],
                 cwd=str(repo_path),
