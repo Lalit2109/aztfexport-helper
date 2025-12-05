@@ -172,20 +172,25 @@ def main():
             elif push_to_repos:
                 logger.info(f"Skipping git push for {subscription_name} (no successful exports)")
             
-            # Send to Log Analytics
-            log_analytics.send_subscription_backup_status(
-                subscription_id=subscription_id,
-                subscription_name=subscription_name,
-                environment=environment,
-                status=status,
-                start_time=start_time,
-                end_time=end_time,
-                total_resource_groups=subscription_result.get('total_rgs', 0),
-                successful_resource_groups=subscription_result.get('successful_rgs', 0),
-                failed_resource_groups=subscription_result.get('failed_rgs', 0),
-                git_push_status=git_push_status,
-                error_message=error_message
-            )
+            # Send to Log Analytics (wrapped in try-except to prevent failures from affecting export result)
+            try:
+                log_analytics.send_subscription_backup_status(
+                    subscription_id=subscription_id,
+                    subscription_name=subscription_name,
+                    environment=environment,
+                    status=status,
+                    start_time=start_time,
+                    end_time=end_time,
+                    total_resource_groups=subscription_result.get('total_rgs', 0),
+                    successful_resource_groups=subscription_result.get('successful_rgs', 0),
+                    failed_resource_groups=subscription_result.get('failed_rgs', 0),
+                    git_push_status=git_push_status,
+                    error_message=error_message
+                )
+            except Exception as la_error:
+                # Log Analytics failure should not affect export result
+                logger.warning(f"Failed to send data to Log Analytics for {subscription_name}: {str(la_error)}")
+                logger.info("Export result is preserved despite Log Analytics failure")
             
         except Exception as e:
             end_time = datetime.utcnow()
@@ -200,20 +205,23 @@ def main():
                 'error': error_message
             }
             
-            # Send failure to Log Analytics
-            log_analytics.send_subscription_backup_status(
-                subscription_id=subscription_id,
-                subscription_name=subscription_name,
-                environment=environment,
-                status="failed",
-                start_time=start_time,
-                end_time=end_time,
-                total_resource_groups=0,
-                successful_resource_groups=0,
-                failed_resource_groups=0,
-                git_push_status="skipped",
-                error_message=error_message
-            )
+            # Send failure to Log Analytics (wrapped in try-except to prevent double failure)
+            try:
+                log_analytics.send_subscription_backup_status(
+                    subscription_id=subscription_id,
+                    subscription_name=subscription_name,
+                    environment=environment,
+                    status="failed",
+                    start_time=start_time,
+                    end_time=end_time,
+                    total_resource_groups=0,
+                    successful_resource_groups=0,
+                    failed_resource_groups=0,
+                    git_push_status="skipped",
+                    error_message=error_message
+                )
+            except Exception as la_error:
+                logger.warning(f"Failed to send failure status to Log Analytics for {subscription_name}: {str(la_error)}")
             
             # Continue with next subscription instead of exiting
             logger.warning(f"Continuing with next subscription after error in {subscription_name}")
