@@ -65,9 +65,15 @@ class ExportManager:
         return 'az'
     
     def _matches_exclude_pattern(self, rg_name: str, exclude_patterns: List[str]) -> bool:
-        """Check if resource group name matches any exclude pattern (supports wildcards)"""
+        """Check if resource group name matches any exclude pattern (supports wildcards, case-insensitive)"""
+        rg_name_lower = rg_name.lower()
         for pattern in exclude_patterns:
-            if rg_name == pattern or fnmatch.fnmatch(rg_name, pattern):
+            pattern_lower = pattern.lower()
+            # Case-insensitive exact match
+            if rg_name_lower == pattern_lower:
+                return True
+            # Case-insensitive wildcard match using fnmatchcase with lowercased strings
+            if fnmatch.fnmatchcase(rg_name_lower, pattern_lower):
                 return True
         return False
         
@@ -183,10 +189,17 @@ class ExportManager:
             for rg in rgs_data:
                 rg_name = rg.get('name', '').strip()
                 if rg_name:
-                    # Check which pattern matches (if any)
+                    # Check which pattern matches (if any) - case-insensitive
                     matching_pattern = None
+                    rg_name_lower = rg_name.lower()
                     for pattern in exclude_patterns:
-                        if rg_name == pattern or fnmatch.fnmatch(rg_name, pattern):
+                        pattern_lower = pattern.lower()
+                        # Case-insensitive exact match
+                        if rg_name_lower == pattern_lower:
+                            matching_pattern = pattern
+                            break
+                        # Case-insensitive wildcard match
+                        if fnmatch.fnmatchcase(rg_name_lower, pattern_lower):
                             matching_pattern = pattern
                             break
                     
