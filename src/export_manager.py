@@ -461,7 +461,12 @@ class ExportManager:
         return results
     
     def export_all_subscriptions(self) -> Dict[str, Any]:
-        """Export all enabled subscriptions"""
+        """Export all enabled subscriptions
+        
+        By default, all subscriptions are enabled unless:
+        - export_enabled: false is set in subscription config, OR
+        - subscription ID is in exclude_subscriptions list
+        """
         try:
             self._install_aztfexport()
         except Exception as e:
@@ -470,22 +475,34 @@ class ExportManager:
         
         Path(self.base_dir).mkdir(parents=True, exist_ok=True)
         subscriptions = self.config.get('subscriptions', [])
+        exclude_subscriptions = self.config.get('exclude_subscriptions', [])
         create_rg_folders = self.config.get('output', {}).get('create_rg_folders', True)
         all_results = {}
         
         for sub in subscriptions:
-            if not sub.get('export_enabled', True):
-                self.logger.info(f"Skipping subscription {sub['id']} (export disabled)")
+            subscription_id = sub.get('id')
+            
+            # Check if subscription should be excluded
+            # Exclude if: export_enabled is explicitly False OR subscription ID is in exclude list
+            export_enabled = sub.get('export_enabled', True)  # Default to True
+            is_in_exclude_list = subscription_id in exclude_subscriptions
+            
+            if not export_enabled:
+                self.logger.info(f"Skipping subscription {subscription_id} (export_enabled: false)")
+                continue
+            
+            if is_in_exclude_list:
+                self.logger.info(f"Skipping subscription {subscription_id} (in exclude_subscriptions list)")
                 continue
             
             try:
                 result = self.export_subscription(sub, create_rg_folders)
-                all_results[sub['id']] = result
+                all_results[subscription_id] = result
             except Exception as e:
-                self.logger.error(f"Error exporting subscription {sub['id']}: {str(e)}")
-                all_results[sub['id']] = {
-                    'subscription_id': sub['id'],
-                    'subscription_name': sub['name'],
+                self.logger.error(f"Error exporting subscription {subscription_id}: {str(e)}")
+                all_results[subscription_id] = {
+                    'subscription_id': subscription_id,
+                    'subscription_name': sub.get('name', subscription_id),
                     'error': str(e)
                 }
         

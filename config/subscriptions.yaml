@@ -1,6 +1,17 @@
 # Azure Subscriptions Configuration
 # Configure your 35 subscriptions here
 
+# Subscription Export Control
+# By default, ALL subscriptions are exported unless:
+#   - export_enabled: false is set in the subscription config, OR
+#   - subscription ID is listed in exclude_subscriptions below
+# This makes it easier to manage 35+ subscriptions by only listing what to exclude
+exclude_subscriptions:
+  # List subscription IDs to exclude from export
+  # Example:
+  # - "subscription-id-to-exclude-1"
+  # - "subscription-id-to-exclude-2"
+
 # Global exclusions (applied to all subscriptions)
 # These resource groups are excluded from export across all subscriptions
 # Wildcard patterns are supported (* and ?)
@@ -32,7 +43,7 @@ subscriptions:
   - id: "subscription-id-1"
     name: "Production Subscription 1"
     environment: "prod"
-    export_enabled: true
+    # export_enabled: true  # Optional: set to false to exclude this subscription
     # Repository configuration (optional)
     # repo_name: "terraform-prod-sub-1"  # Repository name (will be created if doesn't exist)
     # repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"  # Full repository URL
@@ -41,17 +52,20 @@ subscriptions:
   - id: "subscription-id-2"
     name: "Development Subscription 1"
     environment: "dev"
-    export_enabled: true
+    # export_enabled: true  # Optional: set to false to exclude this subscription
     # repo_name: "terraform-dev-sub-1"
     # repo_url: "https://dev.azure.com/org/project/_git/terraform-dev-sub-1"
     # branch: "develop"  # Different branch for dev
     
   # Add remaining 33 subscriptions here
+  # Note: By default, all subscriptions are exported unless:
+  #   - export_enabled: false is set, OR
+  #   - subscription ID is in exclude_subscriptions list above
   # Template:
   # - id: "subscription-id-X"
   #   name: "Subscription Name"
   #   environment: "prod|dev|staging"
-  #   export_enabled: true|false
+  #   # export_enabled: true|false  # Optional, defaults to true
 
 # aztfexport configuration
 aztfexport:

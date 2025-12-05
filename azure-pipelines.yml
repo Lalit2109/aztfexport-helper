@@ -93,12 +93,17 @@ steps:
         export CONFIG_PATH=$(configPath)
         export AZURE_DEVOPS_PAT=$(System.AccessToken)
         export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
+        # Log Analytics configuration (set in variable group or pipeline variables)
+        export LOG_ANALYTICS_WORKSPACE_ID=$(LOG_ANALYTICS_WORKSPACE_ID)
+        export LOG_ANALYTICS_SHARED_KEY=$(LOG_ANALYTICS_SHARED_KEY)
         
         # Run export
         echo "Starting Terraform export..."
         python src/main.py
     env:
       SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
+      LOG_ANALYTICS_WORKSPACE_ID: $(LOG_ANALYTICS_WORKSPACE_ID)
+      LOG_ANALYTICS_SHARED_KEY: $(LOG_ANALYTICS_SHARED_KEY)
 
   # Step 6: Publish export results as artifacts
   - script: |
