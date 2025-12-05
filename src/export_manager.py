@@ -159,12 +159,14 @@ class ExportManager:
             self.logger.error(f"Error listing subscriptions: {str(e)}")
             return []
     
-    def _get_resource_groups(self, subscription_id: str) -> List[str]:
+    def _get_resource_groups(self, subscription_id: str, subscription_name: str = None) -> List[str]:
         """Get list of resource groups in a subscription using Azure CLI"""
         resource_groups = []
         global_excludes = self.config.get('global_excludes', {}).get('resource_groups', [])
         local_excludes = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
         exclude_patterns = global_excludes + local_excludes
+        
+        sub_display = f" ({subscription_name})" if subscription_name else ""
         
         try:
             result = subprocess.run(
@@ -176,13 +178,20 @@ class ExportManager:
             )
             
             rgs_data = json.loads(result.stdout)
-            excluded_count = 0
+            excluded_rgs = []  # List of (rg_name, matching_pattern) tuples
             
             for rg in rgs_data:
                 rg_name = rg.get('name', '').strip()
                 if rg_name:
-                    if self._matches_exclude_pattern(rg_name, exclude_patterns):
-                        excluded_count += 1
+                    # Check which pattern matches (if any)
+                    matching_pattern = None
+                    for pattern in exclude_patterns:
+                        if rg_name == pattern or fnmatch.fnmatch(rg_name, pattern):
+                            matching_pattern = pattern
+                            break
+                    
+                    if matching_pattern:
+                        excluded_rgs.append((rg_name, matching_pattern))
                         continue
                     
                     if isinstance(rg_name, str) and rg_name:
@@ -190,10 +199,25 @@ class ExportManager:
                     else:
                         self.logger.warning(f"Skipping invalid resource group name: {rg_name}")
             
-            if excluded_count > 0:
-                self.logger.success(f"Found {len(resource_groups)} resource groups (excluded {excluded_count} matching patterns)")
+            # Log detailed exclusion information
+            if excluded_rgs:
+                self.logger.info(f"Excluded resource groups{sub_display}:")
+                for rg_name, pattern in excluded_rgs:
+                    self.logger.info(f"  ✗ {rg_name} (matched pattern: {pattern})")
+            
+            # Log resource groups that will be processed
+            if resource_groups:
+                self.logger.info(f"Resource groups to process{sub_display}:")
+                for rg_name in resource_groups:
+                    self.logger.info(f"  ✓ {rg_name}")
+            
+            # Summary log
+            total_rgs = len(resource_groups) + len(excluded_rgs)
+            if excluded_rgs:
+                self.logger.success(f"Found {total_rgs} total resource groups{sub_display}: {len(resource_groups)} to process, {len(excluded_rgs)} excluded")
             else:
-                self.logger.success(f"Found {len(resource_groups)} resource groups")
+                self.logger.success(f"Found {len(resource_groups)} resource groups{sub_display} (none excluded)")
+            
             return resource_groups
             
         except subprocess.TimeoutExpired:
@@ -442,8 +466,7 @@ class ExportManager:
         sub_dir.mkdir(parents=True, exist_ok=True)
         
         self.logger.info("Discovering resource groups...")
-        resource_groups = self._get_resource_groups(subscription_id)
-        self.logger.info(f"Found {len(resource_groups)} resource groups")
+        resource_groups = self._get_resource_groups(subscription_id, subscription_name)
         
         results = {
             'subscription_id': subscription_id,

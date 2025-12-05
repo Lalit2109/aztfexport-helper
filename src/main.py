@@ -98,7 +98,49 @@ def main():
         exclude_subscriptions = exclude_subscriptions_raw if isinstance(exclude_subscriptions_raw, list) else []
     create_rg_folders = export_manager.config.get('output', {}).get('create_rg_folders', True)
     
-    logger.info(f"Found {len(subscriptions)} subscription(s), {len(exclude_subscriptions)} in exclude list")
+    # Separate subscriptions into excluded and to-be-processed
+    excluded_subs = []  # List of (sub_name, sub_id, exclude_pattern) tuples
+    subscriptions_to_process = []
+    
+    for sub in subscriptions:
+        subscription_id = sub.get('id')
+        subscription_name = sub.get('name', subscription_id)
+        
+        # Check exclusion by ID or name
+        matching_pattern = None
+        if subscription_id in exclude_subscriptions:
+            matching_pattern = subscription_id
+        elif subscription_name in exclude_subscriptions:
+            matching_pattern = subscription_name
+        
+        if matching_pattern:
+            excluded_subs.append((subscription_name, subscription_id, matching_pattern))
+        else:
+            subscriptions_to_process.append(sub)
+    
+    # Log detailed subscription information
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("Subscription Processing Summary")
+    logger.info("=" * 70)
+    
+    if excluded_subs:
+        logger.info(f"Excluded subscriptions ({len(excluded_subs)}):")
+        for sub_name, sub_id, pattern in excluded_subs:
+            logger.info(f"  ✗ {sub_name} (ID: {sub_id}) - matched exclude pattern: {pattern}")
+    
+    if subscriptions_to_process:
+        logger.info(f"Subscriptions to process ({len(subscriptions_to_process)}):")
+        for sub in subscriptions_to_process:
+            sub_name = sub.get('name', sub.get('id'))
+            sub_id = sub.get('id')
+            logger.info(f"  ✓ {sub_name} (ID: {sub_id})")
+    
+    total_subs = len(subscriptions)
+    logger.success(f"Found {total_subs} total subscription(s): {len(subscriptions_to_process)} to process, {len(excluded_subs)} excluded")
+    logger.info("=" * 70)
+    logger.info("")
+    
     try:
         export_manager._install_aztfexport()
     except Exception as e:
@@ -109,15 +151,9 @@ def main():
     
     results = {}
     
-    for sub in subscriptions:
+    for sub in subscriptions_to_process:
         subscription_id = sub.get('id')
         subscription_name = sub.get('name', subscription_id)
-        
-        # Check exclusion by ID or name
-        is_excluded = subscription_id in exclude_subscriptions or subscription_name in exclude_subscriptions
-        if is_excluded:
-            logger.info(f"Skipping subscription {subscription_name} ({subscription_id}) (in exclude_subscriptions list)")
-            continue
         
         start_time = datetime.utcnow()
         subscription_result = None
