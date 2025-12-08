@@ -30,10 +30,11 @@ class GitManager:
         project = self.azure_devops_config.get('project')
         
         if org and project:
-            repo_name = self._sanitize_name(subscription_name)
+            # Use original subscription name (don't sanitize) - Azure DevOps supports spaces
+            # URL encoding will handle spaces and special characters properly
             encoded_org = quote(org, safe='')
             encoded_project = quote(project, safe='')
-            encoded_repo = quote(repo_name, safe='')
+            encoded_repo = quote(subscription_name, safe='')  # Don't sanitize, just encode
             return f"https://dev.azure.com/{encoded_org}/{encoded_project}/_git/{encoded_repo}"
         
         return None

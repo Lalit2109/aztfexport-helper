@@ -596,4 +596,39 @@ class ExportManager:
         
         git_manager = GitManager(self.config)
         return git_manager.push_to_repo(subscription, export_path)
+    
+    def cleanup_export_directory(self, subscription: Dict[str, Any]) -> bool:
+        """Clean up export directory after successful git push"""
+        subscription_name = subscription.get('name')
+        if not subscription_name:
+            return False
+        
+        try:
+            sub_dir = Path(self.base_dir) / self._sanitize_name(subscription_name)
+            if sub_dir.exists():
+                import shutil
+                shutil.rmtree(sub_dir)
+                self.logger.info(f"Cleaned up export directory: {sub_dir}")
+                return True
+        except Exception as e:
+            self.logger.warning(f"Failed to cleanup export directory: {str(e)}")
+            return False
+    
+    def check_disk_space(self, min_free_percent: float = 5.0) -> bool:
+        """Check if there's enough free disk space"""
+        try:
+            import shutil
+            stat = shutil.disk_usage(self.base_dir)
+            free_percent = (stat.free / stat.total) * 100
+            
+            if free_percent < min_free_percent:
+                self.logger.warning(f"⚠️  Low disk space: {free_percent:.1f}% free (minimum: {min_free_percent}%)")
+                self.logger.warning(f"   Total: {stat.total / (1024**3):.2f} GB, Free: {stat.free / (1024**3):.2f} GB")
+                return False
+            else:
+                self.logger.debug(f"Disk space check: {free_percent:.1f}% free")
+                return True
+        except Exception as e:
+            self.logger.warning(f"Could not check disk space: {str(e)}")
+            return True  # Continue if check fails
 

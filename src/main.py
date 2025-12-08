@@ -149,6 +149,13 @@ def main():
     
     Path(export_manager.base_dir).mkdir(parents=True, exist_ok=True)
     
+    # Check disk space before starting
+    logger.info("Checking disk space...")
+    if not export_manager.check_disk_space(min_free_percent=5.0):
+        logger.warning("⚠️  Low disk space detected. Consider cleaning up old exports.")
+        logger.warning("   Continuing anyway, but exports may fail if disk fills up.")
+        logger.info("")
+    
     results = {}
     
     for sub in subscriptions_to_process:
@@ -192,6 +199,12 @@ def main():
                         if success:
                             logger.success(f"Successfully pushed {subscription_name}")
                             git_push_status = "success"
+                            
+                            # Clean up export directory after successful push
+                            cleanup_after_push = export_manager.config.get('output', {}).get('cleanup_after_push', True)
+                            if cleanup_after_push:
+                                logger.info(f"Cleaning up export directory for {subscription_name}...")
+                                export_manager.cleanup_export_directory(sub)
                         else:
                             logger.error(f"Failed to push {subscription_name}")
                             git_push_status = "failed"

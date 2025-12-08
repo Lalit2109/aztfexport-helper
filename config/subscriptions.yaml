@@ -64,5 +64,7 @@ output:
   base_dir: "./exports"
   # Create resource group subfolders (true) or flat subscription folder (false)
   create_rg_folders: true
+  # Clean up export directory after successful git push (saves disk space)
+  cleanup_after_push: true
   
 
