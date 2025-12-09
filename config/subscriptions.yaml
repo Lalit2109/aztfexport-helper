@@ -58,6 +58,8 @@ git:
   # Push to repos (can override via PUSH_TO_REPOS env var)
   push_to_repos: false
   branch: "main"
+  # Number of days to keep backup branches (default: 7)
+  backup_retention_days: 7
 
 # Output configuration
 output:

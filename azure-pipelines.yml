@@ -7,6 +7,16 @@ trigger:
 
 pr: none
 
+# Schedule: Run weekly on Friday morning at 8:00 AM UTC
+schedules:
+- cron: "0 8 * * 5"  # Every Friday at 8:00 AM UTC
+  displayName: Weekly Terraform Export (Friday Morning)
+  branches:
+    include:
+    - main
+    - master
+  always: true  # Run even if there are no code changes
+
 pool:
   vmImage: 'ubuntu-latest'
 

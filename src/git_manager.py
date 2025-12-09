@@ -51,14 +51,15 @@ class GitManager:
         return os.getenv('AZURE_DEVOPS_PAT') or os.getenv('SYSTEM_ACCESS_TOKEN')
     
     def _get_branch(self, subscription: Dict[str, Any]) -> str:
-        """Get branch name for subscription with date and time"""
-        from datetime import datetime
-        
+        """Get main branch name (always main for latest export)"""
         base_branch = os.getenv('GIT_BRANCH') or self.git_config.get('branch', 'main')
-        date_str = datetime.now().strftime('%Y-%m-%d-%H%M')
-        branch_name = f"{base_branch}-{date_str}"
-        
-        return branch_name
+        return base_branch  # Always use main for latest
+    
+    def _get_backup_branch_name(self) -> str:
+        """Get backup branch name with current date"""
+        from datetime import datetime
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        return f"backup-{date_str}"
     
     def _configure_git_credentials(self, repo_url: str) -> bool:
         """Configure git credentials for Azure DevOps"""
@@ -250,6 +251,134 @@ resource-group-name/
             self.logger.warning(f"Error checking out branch: {str(e)}")
             return False
     
+    def _create_backup_branch(self, repo_path: Path, branch: str, backup_branch: str, repo_url: str) -> bool:
+        """Create a backup branch from the current branch"""
+        try:
+            # Create backup branch from current branch
+            result = subprocess.run(
+                ['git', 'branch', backup_branch],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0 and 'already exists' not in result.stderr.lower():
+                self.logger.warning(f"Could not create backup branch: {result.stderr}")
+                return False
+            
+            # Push backup branch
+            pat_token = self._get_pat_token()
+            if not pat_token:
+                self.logger.warning("PAT token not available for backup branch push")
+                return False
+            
+            if 'dev.azure.com' in repo_url:
+                auth_url = f'https://{pat_token}@dev.azure.com'
+                repo_url_with_auth = repo_url.replace('https://dev.azure.com', auth_url)
+            else:
+                repo_url_with_auth = repo_url
+            
+            push_result = subprocess.run(
+                ['git', 'push', 'origin', backup_branch, '--force'],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
+            )
+            
+            if push_result.returncode == 0:
+                self.logger.info(f"Created backup branch: {backup_branch}")
+                return True
+            else:
+                self.logger.warning(f"Could not push backup branch: {push_result.stderr}")
+                return False
+        except Exception as e:
+            self.logger.warning(f"Error creating backup branch: {str(e)}")
+            return False
+    
+    def _cleanup_old_backup_branches(self, repo_path: Path, repo_url: str, retention_days: int = 7) -> bool:
+        """Clean up backup branches older than retention_days"""
+        try:
+            from datetime import datetime, timedelta
+            import re
+            
+            cutoff_date = datetime.now() - timedelta(days=retention_days)
+            
+            # Get all remote backup branches
+            pat_token = self._get_pat_token()
+            if not pat_token:
+                self.logger.warning("PAT token not available for branch cleanup")
+                return False
+            
+            if 'dev.azure.com' in repo_url:
+                auth_url = f'https://{pat_token}@dev.azure.com'
+                repo_url_with_auth = repo_url.replace('https://dev.azure.com', auth_url)
+            else:
+                repo_url_with_auth = repo_url
+            
+            result = subprocess.run(
+                ['git', 'ls-remote', '--heads', repo_url_with_auth, 'backup-*'],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                self.logger.debug("No backup branches found to cleanup")
+                return True
+            
+            branches_to_delete = []
+            branches_to_keep = []
+            
+            # Parse branch names and check dates
+            for line in result.stdout.strip().split('\n'):
+                if not line.strip():
+                    continue
+                
+                # Extract branch name (format: refs/heads/backup-YYYY-MM-DD)
+                match = re.search(r'refs/heads/(backup-\d{4}-\d{2}-\d{2})', line)
+                if match:
+                    branch_name = match.group(1)
+                    date_str = branch_name.replace('backup-', '')
+                    
+                    try:
+                        branch_date = datetime.strptime(date_str, '%Y-%m-%d')
+                        if branch_date < cutoff_date:
+                            branches_to_delete.append(branch_name)
+                        else:
+                            branches_to_keep.append(branch_name)
+                    except ValueError:
+                        self.logger.warning(f"Could not parse date from branch: {branch_name}")
+                        continue
+            
+            if branches_to_delete:
+                self.logger.info(f"Cleaning up {len(branches_to_delete)} old backup branch(es) (keeping {len(branches_to_keep)} recent ones)")
+                
+                for branch in branches_to_delete:
+                    try:
+                        # Delete remote branch
+                        delete_result = subprocess.run(
+                            ['git', 'push', 'origin', '--delete', branch],
+                            cwd=str(repo_path),
+                            capture_output=True,
+                            text=True,
+                            env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
+                        )
+                        
+                        if delete_result.returncode == 0:
+                            self.logger.debug(f"Deleted old backup branch: {branch}")
+                        else:
+                            self.logger.warning(f"Could not delete branch {branch}: {delete_result.stderr}")
+                    except Exception as e:
+                        self.logger.warning(f"Error deleting branch {branch}: {str(e)}")
+            else:
+                self.logger.debug("No old backup branches to cleanup")
+            
+            return True
+        except Exception as e:
+            self.logger.warning(f"Error cleaning up old backup branches: {str(e)}")
+            return False
+    
     def _commit_changes(self, repo_path: Path, subscription: Dict[str, Any]) -> bool:
         """Commit all changes to git"""
         try:
@@ -281,7 +410,7 @@ resource-group-name/
             self.logger.error(f"Failed to commit changes: {e.stderr.decode()}")
             return False
     
-    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str) -> bool:
+    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str, is_main: bool = False) -> bool:
         """Push changes to remote repository"""
         pat_token = self._get_pat_token()
         if not pat_token:
@@ -309,14 +438,40 @@ resource-group-name/
                 text=True
             )
             
+            # For main branch, try to pull and merge first
+            if is_main:
+                try:
+                    pull_result = subprocess.run(
+                        ['git', 'pull', 'origin', branch, '--no-edit', '--no-rebase'],
+                        cwd=str(repo_path),
+                        capture_output=True,
+                        text=True,
+                        check=False  # Don't fail if branch doesn't exist
+                    )
+                    if pull_result.returncode == 0:
+                        self.logger.debug("Pulled and merged latest changes from main")
+                except:
+                    pass  # Branch might not exist yet
+            
             # Push with authentication
-            result = subprocess.run(
-                ['git', 'push', '-u', 'origin', branch, '--force'],
-                cwd=str(repo_path),
-                capture_output=True,
-                text=True,
-                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
-            )
+            if is_main:
+                # Push to main without force (safer)
+                result = subprocess.run(
+                    ['git', 'push', 'origin', branch],
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
+                )
+            else:
+                # Push backup branch with force (OK for backup branches)
+                result = subprocess.run(
+                    ['git', 'push', '-u', 'origin', branch, '--force'],
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
+                )
             
             if result.returncode == 0:
                 self.logger.success(f"Pushed to {branch} branch")
@@ -357,9 +512,13 @@ resource-group-name/
             self.logger.warning(f"No repository URL configured for subscription {subscription.get('id')}")
             return False
         
-        branch = self._get_branch(subscription)
+        main_branch = self._get_branch(subscription)  # Returns "main"
+        backup_branch = self._get_backup_branch_name()  # Returns "backup-YYYY-MM-DD"
+        retention_days = self.git_config.get('backup_retention_days', 7)
+        
         self.logger.info(f"Pushing to repository: {repo_url}")
-        self.logger.info(f"Branch: {branch}")
+        self.logger.info(f"Main branch: {main_branch} (latest export)")
+        self.logger.info(f"Backup branch: {backup_branch} (keeping last {retention_days} days)")
         
         if not self._configure_git_credentials(repo_url):
             return False
@@ -373,14 +532,25 @@ resource-group-name/
         if not self._add_remote(export_path, repo_url):
             return False
         
-        if not self._checkout_branch(export_path, branch):
+        # Checkout main branch
+        if not self._checkout_branch(export_path, main_branch):
             self.logger.warning("Continuing with current branch")
         
         if not self._commit_changes(export_path, subscription):
             return False
         
-        if not self._push_to_remote(export_path, branch, repo_url):
+        # Push to main branch (latest)
+        if not self._push_to_remote(export_path, main_branch, repo_url, is_main=True):
             return False
+        
+        # Create backup branch
+        self.logger.info(f"Creating backup branch: {backup_branch}")
+        if not self._create_backup_branch(export_path, main_branch, backup_branch, repo_url):
+            self.logger.warning("Failed to create backup branch, but main push succeeded")
+        
+        # Cleanup old backup branches
+        self.logger.info(f"Cleaning up backup branches older than {retention_days} days...")
+        self._cleanup_old_backup_branches(export_path, repo_url, retention_days)
         
         self.logger.success(f"Successfully pushed to repository: {repo_url}")
         return True
