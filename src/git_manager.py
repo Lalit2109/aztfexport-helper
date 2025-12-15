@@ -296,13 +296,11 @@ resource-group-name/
             self.logger.warning(f"Error creating backup branch: {str(e)}")
             return False
     
-    def _cleanup_old_backup_branches(self, repo_path: Path, repo_url: str, retention_days: int = 7) -> bool:
-        """Clean up backup branches older than retention_days"""
+    def _cleanup_old_backup_branches(self, repo_path: Path, repo_url: str, retention_count: int = 10) -> bool:
+        """Clean up backup branches, keeping only the most recent N (retention_count)"""
         try:
-            from datetime import datetime, timedelta
+            from datetime import datetime
             import re
-            
-            cutoff_date = datetime.now() - timedelta(days=retention_days)
             
             # Get all remote backup branches
             pat_token = self._get_pat_token()
@@ -327,8 +325,7 @@ resource-group-name/
                 self.logger.debug("No backup branches found to cleanup")
                 return True
             
-            branches_to_delete = []
-            branches_to_keep = []
+            branches_with_dates = []
             
             # Parse branch names and check dates
             for line in result.stdout.strip().split('\n'):
@@ -340,20 +337,30 @@ resource-group-name/
                 if match:
                     branch_name = match.group(1)
                     date_str = branch_name.replace('backup-', '')
-                    
                     try:
                         branch_date = datetime.strptime(date_str, '%Y-%m-%d')
-                        if branch_date < cutoff_date:
-                            branches_to_delete.append(branch_name)
-                        else:
-                            branches_to_keep.append(branch_name)
+                        branches_with_dates.append((branch_name, branch_date))
                     except ValueError:
                         self.logger.warning(f"Could not parse date from branch: {branch_name}")
                         continue
-            
+
+            if not branches_with_dates:
+                self.logger.debug("No parsable backup branches found to cleanup")
+                return True
+
+            # Sort branches by date (newest first)
+            branches_with_dates.sort(key=lambda x: x[1], reverse=True)
+
+            # Determine which branches to keep and which to delete
+            branches_to_keep = [b for b, _ in branches_with_dates[:retention_count]]
+            branches_to_delete = [b for b, _ in branches_with_dates[retention_count:]]
+
             if branches_to_delete:
-                self.logger.info(f"Cleaning up {len(branches_to_delete)} old backup branch(es) (keeping {len(branches_to_keep)} recent ones)")
-                
+                self.logger.info(
+                    f"Cleaning up {len(branches_to_delete)} old backup branch(es) "
+                    f"(keeping {len(branches_to_keep)} most recent)"
+                )
+
                 for branch in branches_to_delete:
                     try:
                         # Delete remote branch
@@ -411,7 +418,11 @@ resource-group-name/
             return False
     
     def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str, is_main: bool = False) -> bool:
-        """Push changes to remote repository"""
+        """Push changes to remote repository
+        
+        Note: These repositories are used only for backup, so force-push is acceptable
+        for both main and backup branches.
+        """
         pat_token = self._get_pat_token()
         if not pat_token:
             self.logger.error("PAT token not available for push")
@@ -437,41 +448,15 @@ resource-group-name/
                 capture_output=True,
                 text=True
             )
-            
-            # For main branch, try to pull and merge first
-            if is_main:
-                try:
-                    pull_result = subprocess.run(
-                        ['git', 'pull', 'origin', branch, '--no-edit', '--no-rebase'],
-                        cwd=str(repo_path),
-                        capture_output=True,
-                        text=True,
-                        check=False  # Don't fail if branch doesn't exist
-                    )
-                    if pull_result.returncode == 0:
-                        self.logger.debug("Pulled and merged latest changes from main")
-                except:
-                    pass  # Branch might not exist yet
-            
-            # Push with authentication
-            if is_main:
-                # Push to main without force (safer)
-                result = subprocess.run(
-                    ['git', 'push', 'origin', branch],
-                    cwd=str(repo_path),
-                    capture_output=True,
-                    text=True,
-                    env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
-                )
-            else:
-                # Push backup branch with force (OK for backup branches)
-                result = subprocess.run(
-                    ['git', 'push', '-u', 'origin', branch, '--force'],
-                    cwd=str(repo_path),
-                    capture_output=True,
-                    text=True,
-                    env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
-                )
+
+            # Push with authentication (force push is acceptable for backup repos)
+            result = subprocess.run(
+                ['git', 'push', '-u', 'origin', branch, '--force'],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
+            )
             
             if result.returncode == 0:
                 self.logger.success(f"Pushed to {branch} branch")
@@ -514,11 +499,12 @@ resource-group-name/
         
         main_branch = self._get_branch(subscription)  # Returns "main"
         backup_branch = self._get_backup_branch_name()  # Returns "backup-YYYY-MM-DD"
-        retention_days = self.git_config.get('backup_retention_days', 7)
+        # Keep only the last N backup branches (by date)
+        retention_count = int(self.git_config.get('backup_retention_count', 10))
         
         self.logger.info(f"Pushing to repository: {repo_url}")
         self.logger.info(f"Main branch: {main_branch} (latest export)")
-        self.logger.info(f"Backup branch: {backup_branch} (keeping last {retention_days} days)")
+        self.logger.info(f"Backup branch: {backup_branch} (keeping last {retention_count} runs)")
         
         if not self._configure_git_credentials(repo_url):
             return False
@@ -549,8 +535,8 @@ resource-group-name/
             self.logger.warning("Failed to create backup branch, but main push succeeded")
         
         # Cleanup old backup branches
-        self.logger.info(f"Cleaning up backup branches older than {retention_days} days...")
-        self._cleanup_old_backup_branches(export_path, repo_url, retention_days)
+        self.logger.info(f"Cleaning up backup branches, keeping last {retention_count} runs...")
+        self._cleanup_old_backup_branches(export_path, repo_url, retention_count)
         
         self.logger.success(f"Successfully pushed to repository: {repo_url}")
         return True

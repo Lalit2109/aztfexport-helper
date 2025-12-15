@@ -153,3 +153,21 @@ steps:
     displayName: 'Generate Summary Report'
     continueOnError: true
 
+  # Step 8: Send backup email report (Log Analytics -> SendGrid)
+  - task: AzurePowerShell@5
+    displayName: 'Send Terraform Backup Email Report'
+    inputs:
+      azureSubscription: '$(azureServiceConnection)'
+      ScriptType: 'FilePath'
+      ScriptPath: 'azure-pipelines/backup-monitor/send-backup-report.ps1'
+      ScriptArguments: >
+        -LogAnalyticsWorkspaceId "$(LOG_ANALYTICS_WORKSPACE_ID)"
+        -LogAnalyticsSharedKey "$(LOG_ANALYTICS_SHARED_KEY)"
+        -SendGridApiKey "$(SendGridApiKey)"
+        -SendGridFrom "$(SendGridFrom)"
+        -SendGridTo "$(SendGridTo)"
+        -Environment "$(Environment)"
+        -LookbackHours 24
+      azurePowerShellVersion: 'LatestVersion'
+    condition: always()
+
