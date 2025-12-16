@@ -17,9 +17,6 @@ schedules:
     - master
   always: true  # Run even if there are no code changes
 
-pool:
-  vmImage: 'ubuntu-latest'
-
 variables:
   - group: 'TerraformExport'  # Variable group with configuration
   - name: configPath
@@ -31,143 +28,160 @@ variables:
   - name: pushToRepos
     value: 'true'  # Set to 'false' to disable git push
 
-steps:
-  # Step 1: Install prerequisites
-  - task: GoTool@0
-    displayName: 'Install Go (for aztfexport)'
-    inputs:
-      version: '1.21.x'
+stages:
+- stage: Export
+  displayName: 'Terraform Export'
+  pool:
+    vmImage: 'ubuntu-latest'
+  jobs:
+  - job: ExportJob
+    displayName: 'Export Azure Resources'
+    steps:
+    # Step 1: Install prerequisites
+    - task: GoTool@0
+      displayName: 'Install Go (for aztfexport)'
+      inputs:
+        version: '1.21.x'
 
-  - script: |
-      echo "Installing aztfexport..."
-      go install github.com/Azure/aztfexport@latest
-      export PATH=$PATH:$(go env GOPATH)/bin
-      aztfexport --version
-      echo "##vso[task.prependpath]$(go env GOPATH)/bin"
-    displayName: 'Install aztfexport'
+    - script: |
+        echo "Installing aztfexport..."
+        go install github.com/Azure/aztfexport@latest
+        export PATH=$PATH:$(go env GOPATH)/bin
+        aztfexport --version
+        echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+      displayName: 'Install aztfexport'
 
-  - task: UsePythonVersion@0
-    displayName: 'Setup Python'
-    inputs:
-      versionSpec: '3.10'
-      addToPath: true
+    - task: UsePythonVersion@0
+      displayName: 'Setup Python'
+      inputs:
+        versionSpec: '3.10'
+        addToPath: true
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: 'Install Python dependencies'
 
-  - task: TerraformInstaller@0
-    displayName: 'Install Terraform'
-    inputs:
-      terraformVersion: 'latest'
+    - task: TerraformInstaller@0
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: 'latest'
 
-  # Step 2: Clean previous exports
-  - script: |
-      echo "Cleaning output directory: $(outputDir)"
-      if [ -d "$(outputDir)" ]; then
-        rm -rf "$(outputDir)"
-      fi
-      mkdir -p "$(outputDir)"
-      echo "Output directory is now clean:"
-      ls -la "$(outputDir)" || echo "Directory is empty"
-    displayName: 'Clean export/output directory'
-
-  # Step 3: Configure Azure authentication and run export
-  - task: AzureCLI@2
-    displayName: 'Azure Login and Export'
-    inputs:
-      azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
-      scriptType: 'bash'
-      scriptLocation: 'inlineScript'
-      inlineScript: |
-        echo "Authenticating with Azure..."
-        az account show
-        echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
-        echo "Logged in to subscription: $(az account show --query name -o tsv)"
-        
-        # Verify Terraform is available
-        echo "Checking Terraform installation..."
-        terraform --version || echo "Warning: Terraform not found in PATH"
-        which terraform || echo "Warning: terraform command not found"
-        
-        # Configure Git
-        git config --global user.name "Azure Pipelines"
-        git config --global user.email "azure-pipelines@devops.com"
-        
-        # Set up environment variables
-        export PUSH_TO_REPOS=$(pushToRepos)
-        export GIT_BRANCH=$(gitBranch)
-        export OUTPUT_DIR=$(outputDir)
-        export LOG_LEVEL=INFO
-        export CONFIG_PATH=$(configPath)
-        export AZURE_DEVOPS_PAT=$(System.AccessToken)
-        export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
-        # Log Analytics configuration (set in variable group or pipeline variables)
-        export LOG_ANALYTICS_WORKSPACE_ID=$(LOG_ANALYTICS_WORKSPACE_ID)
-        export LOG_ANALYTICS_SHARED_KEY=$(LOG_ANALYTICS_SHARED_KEY)
-        
-        # Run export
-        echo "Starting Terraform export..."
-        python src/main.py
-    env:
-      SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
-      LOG_ANALYTICS_WORKSPACE_ID: $(LOG_ANALYTICS_WORKSPACE_ID)
-      LOG_ANALYTICS_SHARED_KEY: $(LOG_ANALYTICS_SHARED_KEY)
-
-  # Step 6: Publish export results as artifacts
-  - script: |
-      # Ensure output directory exists
-      if [ ! -d "$(outputDir)" ]; then
-        echo "Creating output directory: $(outputDir)"
+    # Step 2: Clean previous exports
+    - script: |
+        echo "Cleaning output directory: $(outputDir)"
+        if [ -d "$(outputDir)" ]; then
+          rm -rf "$(outputDir)"
+        fi
         mkdir -p "$(outputDir)"
-      fi
-      # Check if directory has content
-      if [ -z "$(ls -A $(outputDir) 2>/dev/null)" ]; then
-        echo "Warning: Output directory is empty, creating placeholder"
-        echo "No exports completed" > "$(outputDir)/README.txt"
-      fi
-      echo "Output directory contents:"
-      ls -la "$(outputDir)" || echo "Directory is empty"
-    displayName: 'Prepare Output Directory'
-    continueOnError: true
+        echo "Output directory is now clean:"
+        ls -la "$(outputDir)" || echo "Directory is empty"
+      displayName: 'Clean export/output directory'
 
-  - task: PublishBuildArtifacts@1
-    displayName: 'Publish Export Results'
-    inputs:
-      pathToPublish: '$(outputDir)'
-      artifactName: 'terraform-exports'
-      publishLocation: 'Container'
-    condition: always()
+    # Step 3: Configure Azure authentication and run export
+    - task: AzureCLI@2
+      displayName: 'Azure Login and Export'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Authenticating with Azure..."
+          az account show
+          echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
+          echo "Logged in to subscription: $(az account show --query name -o tsv)"
+          
+          # Verify Terraform is available
+          echo "Checking Terraform installation..."
+          terraform --version || echo "Warning: Terraform not found in PATH"
+          which terraform || echo "Warning: terraform command not found"
+          
+          # Configure Git
+          git config --global user.name "Azure Pipelines"
+          git config --global user.email "azure-pipelines@devops.com"
+          
+          # Set up environment variables
+          export PUSH_TO_REPOS=$(pushToRepos)
+          export GIT_BRANCH=$(gitBranch)
+          export OUTPUT_DIR=$(outputDir)
+          export LOG_LEVEL=INFO
+          export CONFIG_PATH=$(configPath)
+          export AZURE_DEVOPS_PAT=$(System.AccessToken)
+          export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
+          # Log Analytics configuration (set in variable group or pipeline variables)
+          export LOG_ANALYTICS_WORKSPACE_ID=$(LOG_ANALYTICS_WORKSPACE_ID)
+          export LOG_ANALYTICS_SHARED_KEY=$(LOG_ANALYTICS_SHARED_KEY)
+          
+          # Run export
+          echo "Starting Terraform export..."
+          python src/main.py
+      env:
+        SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
+        LOG_ANALYTICS_WORKSPACE_ID: $(LOG_ANALYTICS_WORKSPACE_ID)
+        LOG_ANALYTICS_SHARED_KEY: $(LOG_ANALYTICS_SHARED_KEY)
 
-  # Step 7: Generate summary report
-  - script: |
-      if [ -f "$(outputDir)/export_results.json" ]; then
-        echo "##[section]Export Summary"
-        echo '```json'
-        cat "$(outputDir)/export_results.json" | python -m json.tool
-        echo '```'
-      else
-        echo "Export results file not found"
-      fi
-    displayName: 'Generate Summary Report'
-    continueOnError: true
+    # Step 6: Publish export results as artifacts
+    - script: |
+        # Ensure output directory exists
+        if [ ! -d "$(outputDir)" ]; then
+          echo "Creating output directory: $(outputDir)"
+          mkdir -p "$(outputDir)"
+        fi
+        # Check if directory has content
+        if [ -z "$(ls -A $(outputDir) 2>/dev/null)" ]; then
+          echo "Warning: Output directory is empty, creating placeholder"
+          echo "No exports completed" > "$(outputDir)/README.txt"
+        fi
+        echo "Output directory contents:"
+        ls -la "$(outputDir)" || echo "Directory is empty"
+      displayName: 'Prepare Output Directory'
+      continueOnError: true
 
-  # Step 8: Send backup email report (Log Analytics -> SendGrid)
-  - task: AzurePowerShell@5
-    displayName: 'Send Terraform Backup Email Report'
-    inputs:
-      azureSubscription: '$(azureServiceConnection)'
-      ScriptType: 'FilePath'
-      ScriptPath: 'azure-pipelines/backup-monitor/send-backup-report.ps1'
-      ScriptArguments: >
-        -LogAnalyticsWorkspaceId "$(LOG_ANALYTICS_WORKSPACE_ID)"
-        -LogAnalyticsSharedKey "$(LOG_ANALYTICS_SHARED_KEY)"
-        -SendGridApiKey "$(SendGridApiKey)"
-        -SendGridFrom "$(SendGridFrom)"
-        -SendGridTo "$(SendGridTo)"
-        -Environment "$(Environment)"
-        -LookbackHours 24
-      azurePowerShellVersion: 'LatestVersion'
-    condition: always()
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Export Results'
+      inputs:
+        pathToPublish: '$(outputDir)'
+        artifactName: 'terraform-exports'
+        publishLocation: 'Container'
+      condition: always()
+
+    # Step 7: Generate summary report
+    - script: |
+        if [ -f "$(outputDir)/export_results.json" ]; then
+          echo "##[section]Export Summary"
+          echo '```json'
+          cat "$(outputDir)/export_results.json" | python -m json.tool
+          echo '```'
+        else
+          echo "Export results file not found"
+        fi
+      displayName: 'Generate Summary Report'
+      continueOnError: true
+
+- stage: SendEmailReport
+  displayName: 'Send Backup Email Report'
+  dependsOn: Export
+  condition: always()  # Run even if export stage fails
+  pool:
+    vmImage: 'windows-latest'  # Windows needed for PowerShell
+  jobs:
+  - job: EmailReportJob
+    displayName: 'Send Email Report'
+    steps:
+    - task: AzurePowerShell@5
+      displayName: 'Send Terraform Backup Email Report'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        ScriptType: 'FilePath'
+        ScriptPath: 'azure-pipelines/backup-monitor/send-backup-report.ps1'
+        ScriptArguments: >
+          -LogAnalyticsWorkspaceId "$(LOG_ANALYTICS_WORKSPACE_ID)"
+          -LogAnalyticsSharedKey "$(LOG_ANALYTICS_SHARED_KEY)"
+          -SendGridApiKey "$(SendGridApiKey)"
+          -SendGridFrom "$(SendGridFrom)"
+          -SendGridTo "$(SendGridTo)"
+          -Environment "$(Environment)"
+          -LookbackHours 24
+        azurePowerShellVersion: 'LatestVersion'
+      continueOnError: true  # Don't fail pipeline if email fails
 
