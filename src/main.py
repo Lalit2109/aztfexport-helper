@@ -7,9 +7,11 @@ import sys
 import json
 import subprocess
 from pathlib import Path
+from datetime import datetime
 from dotenv import load_dotenv
 
 from export_manager import ExportManager
+from log_analytics import LogAnalyticsSender
 from logger import get_logger
 
 
@@ -74,63 +76,198 @@ def main():
     logger.info("Exporting Azure resources...")
     logger.info("-" * 70)
     
-    try:
-        results = export_manager.export_all_subscriptions()
-    except Exception as e:
-        logger.error(f"Fatal error during export: {str(e)}")
-        import traceback
-        traceback.print_exc()
+    log_analytics = LogAnalyticsSender()
+    push_to_repos = os.getenv('PUSH_TO_REPOS', 'false').lower() == 'true'
+    push_to_repos = push_to_repos or export_manager.config.get('git', {}).get('push_to_repos', False)
+    
+    logger.info("Discovering subscriptions from Azure...")
+    subscriptions = export_manager.get_subscriptions_from_azure()
+    
+    if not subscriptions:
+        logger.error("No subscriptions found. Check Azure CLI authentication and permissions.")
         sys.exit(1)
+    
+    exclude_subscriptions_raw = export_manager.config.get('exclude_subscriptions', {})
+    # Flatten prod and non-prod lists into single list
+    if isinstance(exclude_subscriptions_raw, dict):
+        prod_list = exclude_subscriptions_raw.get('prod') or []
+        non_prod_list = exclude_subscriptions_raw.get('non-prod') or []
+        exclude_subscriptions = (prod_list if isinstance(prod_list, list) else []) + (non_prod_list if isinstance(non_prod_list, list) else [])
+    else:
+        # Backward compatibility: if it's a list, use it directly
+        exclude_subscriptions = exclude_subscriptions_raw if isinstance(exclude_subscriptions_raw, list) else []
+    create_rg_folders = export_manager.config.get('output', {}).get('create_rg_folders', True)
+    
+    # Separate subscriptions into excluded and to-be-processed
+    excluded_subs = []  # List of (sub_name, sub_id, exclude_pattern) tuples
+    subscriptions_to_process = []
+    
+    for sub in subscriptions:
+        subscription_id = sub.get('id')
+        subscription_name = sub.get('name', subscription_id)
+        
+        # Check exclusion by ID or name
+        matching_pattern = None
+        if subscription_id in exclude_subscriptions:
+            matching_pattern = subscription_id
+        elif subscription_name in exclude_subscriptions:
+            matching_pattern = subscription_name
+        
+        if matching_pattern:
+            excluded_subs.append((subscription_name, subscription_id, matching_pattern))
+        else:
+            subscriptions_to_process.append(sub)
+    
+    # Log detailed subscription information
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("Subscription Processing Summary")
+    logger.info("=" * 70)
+    
+    if excluded_subs:
+        logger.info(f"Excluded subscriptions ({len(excluded_subs)}):")
+        for sub_name, sub_id, pattern in excluded_subs:
+            logger.info(f"  ✗ {sub_name} (ID: {sub_id}) - matched exclude pattern: {pattern}")
+    
+    if subscriptions_to_process:
+        logger.info(f"Subscriptions to process ({len(subscriptions_to_process)}):")
+        for sub in subscriptions_to_process:
+            sub_name = sub.get('name', sub.get('id'))
+            sub_id = sub.get('id')
+            logger.info(f"  ✓ {sub_name} (ID: {sub_id})")
+    
+    total_subs = len(subscriptions)
+    logger.success(f"Found {total_subs} total subscription(s): {len(subscriptions_to_process)} to process, {len(excluded_subs)} excluded")
+    logger.info("=" * 70)
+    logger.info("")
+    
+    try:
+        export_manager._install_aztfexport()
+    except Exception as e:
+        logger.error(f"Error with aztfexport: {str(e)}")
+        sys.exit(1)
+    
+    Path(export_manager.base_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Check disk space before starting
+    logger.info("Checking disk space...")
+    if not export_manager.check_disk_space(min_free_percent=5.0):
+        logger.warning("⚠️  Low disk space detected. Consider cleaning up old exports.")
+        logger.warning("   Continuing anyway, but exports may fail if disk fills up.")
+        logger.info("")
+    
+    results = {}
+    
+    for sub in subscriptions_to_process:
+        subscription_id = sub.get('id')
+        subscription_name = sub.get('name', subscription_id)
+        
+        start_time = datetime.utcnow()
+        subscription_result = None
+        git_push_status = "skipped"
+        error_message = None
+        
+        try:
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info(f"Processing subscription: {subscription_name}")
+            logger.info("=" * 70)
+            
+            subscription_result = export_manager.export_subscription(sub, create_rg_folders)
+            results[subscription_id] = subscription_result
+            end_time = datetime.utcnow()
+            
+            if subscription_result.get('successful_rgs', 0) > 0:
+                status = "success"
+            elif subscription_result.get('error'):
+                status = "failed"
+                error_message = subscription_result.get('error')
+            else:
+                status = "failed" if subscription_result.get('failed_rgs', 0) > 0 else "success"
+            
+            if push_to_repos and subscription_result.get('successful_rgs', 0) > 0:
+                logger.info("")
+                logger.info("=" * 70)
+                logger.info(f"Pushing {subscription_name} to Git Repository")
+                logger.info("=" * 70)
+                
+                sub_dir = Path(export_manager.base_dir) / export_manager._sanitize_name(subscription_name)
+                
+                if sub_dir.exists():
+                    try:
+                        success = export_manager.push_subscription_to_git(sub, sub_dir)
+                        if success:
+                            logger.success(f"Successfully pushed {subscription_name}")
+                            git_push_status = "success"
+                            
+                            # Clean up export directory after successful push
+                            cleanup_after_push = export_manager.config.get('output', {}).get('cleanup_after_push', True)
+                            if cleanup_after_push:
+                                logger.info(f"Cleaning up export directory for {subscription_name}...")
+                                export_manager.cleanup_export_directory(sub)
+                        else:
+                            logger.error(f"Failed to push {subscription_name}")
+                            git_push_status = "failed"
+                    except Exception as e:
+                        logger.error(f"Error pushing {subscription_name}: {str(e)}")
+                        git_push_status = "failed"
+                        error_message = str(e) if not error_message else f"{error_message}; Git push error: {str(e)}"
+                else:
+                    logger.warning(f"Export directory not found for {subscription_name}: {sub_dir}")
+                    git_push_status = "failed"
+            elif push_to_repos:
+                logger.info(f"Skipping git push for {subscription_name} (no successful exports)")
+            
+            try:
+                log_analytics.send_subscription_backup_status(
+                    subscription_id=subscription_id,
+                    subscription_name=subscription_name,
+                    status=status,
+                    start_time=start_time,
+                    end_time=end_time,
+                    total_resource_groups=subscription_result.get('total_rgs', 0),
+                    successful_resource_groups=subscription_result.get('successful_rgs', 0),
+                    failed_resource_groups=subscription_result.get('failed_rgs', 0),
+                    git_push_status=git_push_status,
+                    error_message=error_message
+                )
+            except Exception as la_error:
+                logger.warning(f"Failed to send data to Log Analytics for {subscription_name}: {str(la_error)}")
+            
+        except Exception as e:
+            end_time = datetime.utcnow()
+            error_message = str(e)
+            logger.error(f"Fatal error exporting subscription {subscription_id}: {error_message}")
+            import traceback
+            traceback.print_exc()
+            
+            results[subscription_id] = {
+                'subscription_id': subscription_id,
+                'subscription_name': subscription_name,
+                'error': error_message
+            }
+            
+            try:
+                log_analytics.send_subscription_backup_status(
+                    subscription_id=subscription_id,
+                    subscription_name=subscription_name,
+                    status="failed",
+                    start_time=start_time,
+                    end_time=end_time,
+                    total_resource_groups=0,
+                    successful_resource_groups=0,
+                    failed_resource_groups=0,
+                    git_push_status="skipped",
+                    error_message=error_message
+                )
+            except Exception as la_error:
+                logger.warning(f"Failed to send failure status to Log Analytics for {subscription_name}: {str(la_error)}")
+            
+            logger.warning(f"Continuing with next subscription after error in {subscription_name}")
     
     if not results:
         logger.error("No subscriptions were exported. Check your configuration.")
         sys.exit(1)
-    
-    # Only push to git if export was successful
-    push_to_repos = os.getenv('PUSH_TO_REPOS', 'false').lower() == 'true'
-    push_to_repos = push_to_repos or export_manager.config.get('git', {}).get('push_to_repos', False)
-    
-    if push_to_repos:
-        # Check if any exports were successful
-        total_successful = sum(r.get('successful_rgs', 0) for r in results.values())
-        
-        if total_successful == 0:
-            logger.warning("No successful exports found. Skipping git push.")
-        else:
-            logger.info("")
-            logger.info("=" * 70)
-            logger.info("Pushing to Git Repositories")
-            logger.info("=" * 70)
-            
-            subscriptions = export_manager.config.get('subscriptions', [])
-            
-            for sub in subscriptions:
-                if not sub.get('export_enabled', True):
-                    continue
-                
-                subscription_id = sub.get('id')
-                subscription_result = results.get(subscription_id)
-                
-                # Only push if this subscription had successful exports
-                if subscription_result and subscription_result.get('successful_rgs', 0) > 0:
-                    subscription_name = sub.get('name', sub.get('id'))
-                    sub_dir = Path(export_manager.base_dir) / export_manager._sanitize_name(subscription_name)
-                    
-                    if sub_dir.exists():
-                        logger.info(f"Pushing {subscription_name} to repository...")
-                        try:
-                            success = export_manager.push_subscription_to_git(sub, sub_dir)
-                            if success:
-                                logger.success(f"Successfully pushed {subscription_name}")
-                            else:
-                                logger.error(f"Failed to push {subscription_name}")
-                        except Exception as e:
-                            logger.error(f"Error pushing {subscription_name}: {str(e)}")
-                    else:
-                        logger.warning(f"Export directory not found for {subscription_name}: {sub_dir}")
-                else:
-                    subscription_name = sub.get('name', sub.get('id'))
-                    logger.info(f"Skipping git push for {subscription_name} (no successful exports)")
     
     logger.info("")
     logger.info("=" * 70)

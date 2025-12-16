@@ -29,7 +29,6 @@ class ExportManager:
         set_log_level(log_level)
         self.logger = get_logger()
         
-        # Check OUTPUT_DIR environment variable first, then config
         self.base_dir = os.getenv('OUTPUT_DIR') or self.config.get('output', {}).get('base_dir', './exports')
         self.az_cli_path = self._find_az_cli()
     
@@ -66,9 +65,15 @@ class ExportManager:
         return 'az'
     
     def _matches_exclude_pattern(self, rg_name: str, exclude_patterns: List[str]) -> bool:
-        """Check if resource group name matches any exclude pattern (supports wildcards)"""
+        """Check if resource group name matches any exclude pattern (supports wildcards, case-insensitive)"""
+        rg_name_lower = rg_name.lower()
         for pattern in exclude_patterns:
-            if rg_name == pattern or fnmatch.fnmatch(rg_name, pattern):
+            pattern_lower = pattern.lower()
+            # Case-insensitive exact match
+            if rg_name_lower == pattern_lower:
+                return True
+            # Case-insensitive wildcard match using fnmatchcase with lowercased strings
+            if fnmatch.fnmatchcase(rg_name_lower, pattern_lower):
                 return True
         return False
         
@@ -111,12 +116,63 @@ class ExportManager:
             self.logger.info("  Option 2: Download from https://github.com/Azure/aztfexport/releases")
             raise
     
-    def _get_resource_groups(self, subscription_id: str) -> List[str]:
+    def get_subscriptions_from_azure(self) -> List[Dict[str, Any]]:
+        """Get all subscriptions accessible to the current Azure CLI account"""
+        subscriptions = []
+        
+        try:
+            result = subprocess.run(
+                [self.az_cli_path, 'account', 'list', '--query', '[].{id:id, name:name, state:state}', '--output', 'json'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True
+            )
+            
+            subs_data = json.loads(result.stdout)
+            
+            for sub in subs_data:
+                sub_id = sub.get('id', '').strip()
+                sub_name = sub.get('name', '').strip()
+                sub_state = sub.get('state', '').strip()
+                
+                # Only include enabled subscriptions
+                if sub_id and sub_state.lower() == 'enabled':
+                    subscriptions.append({
+                        'id': sub_id,
+                        'name': sub_name or sub_id  # Use ID as name if name is missing
+                    })
+                elif sub_id:
+                    self.logger.debug(f"Skipping subscription {sub_id} (state: {sub_state})")
+            
+            self.logger.success(f"Found {len(subscriptions)} enabled subscription(s) accessible to this account")
+            return subscriptions
+            
+        except subprocess.TimeoutExpired:
+            self.logger.error("Timeout listing subscriptions (exceeded 30 seconds)")
+            return []
+        except FileNotFoundError:
+            self.logger.error("Azure CLI not found. Please install: https://docs.microsoft.com/cli/azure/install-azure-cli")
+            return []
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Azure CLI command failed: {e.stderr}")
+            self.logger.info("Make sure you're logged in: az login")
+            return []
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse Azure CLI output: {str(e)}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Error listing subscriptions: {str(e)}")
+            return []
+    
+    def _get_resource_groups(self, subscription_id: str, subscription_name: str = None) -> List[str]:
         """Get list of resource groups in a subscription using Azure CLI"""
         resource_groups = []
         global_excludes = self.config.get('global_excludes', {}).get('resource_groups', [])
         local_excludes = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
         exclude_patterns = global_excludes + local_excludes
+        
+        sub_display = f" ({subscription_name})" if subscription_name else ""
         
         try:
             result = subprocess.run(
@@ -128,13 +184,27 @@ class ExportManager:
             )
             
             rgs_data = json.loads(result.stdout)
-            excluded_count = 0
+            excluded_rgs = []  # List of (rg_name, matching_pattern) tuples
             
             for rg in rgs_data:
                 rg_name = rg.get('name', '').strip()
                 if rg_name:
-                    if self._matches_exclude_pattern(rg_name, exclude_patterns):
-                        excluded_count += 1
+                    # Check which pattern matches (if any) - case-insensitive
+                    matching_pattern = None
+                    rg_name_lower = rg_name.lower()
+                    for pattern in exclude_patterns:
+                        pattern_lower = pattern.lower()
+                        # Case-insensitive exact match
+                        if rg_name_lower == pattern_lower:
+                            matching_pattern = pattern
+                            break
+                        # Case-insensitive wildcard match
+                        if fnmatch.fnmatchcase(rg_name_lower, pattern_lower):
+                            matching_pattern = pattern
+                            break
+                    
+                    if matching_pattern:
+                        excluded_rgs.append((rg_name, matching_pattern))
                         continue
                     
                     if isinstance(rg_name, str) and rg_name:
@@ -142,10 +212,25 @@ class ExportManager:
                     else:
                         self.logger.warning(f"Skipping invalid resource group name: {rg_name}")
             
-            if excluded_count > 0:
-                self.logger.success(f"Found {len(resource_groups)} resource groups (excluded {excluded_count} matching patterns)")
+            # Log detailed exclusion information
+            if excluded_rgs:
+                self.logger.info(f"Excluded resource groups{sub_display}:")
+                for rg_name, pattern in excluded_rgs:
+                    self.logger.info(f"  ✗ {rg_name} (matched pattern: {pattern})")
+            
+            # Log resource groups that will be processed
+            if resource_groups:
+                self.logger.info(f"Resource groups to process{sub_display}:")
+                for rg_name in resource_groups:
+                    self.logger.info(f"  ✓ {rg_name}")
+            
+            # Summary log
+            total_rgs = len(resource_groups) + len(excluded_rgs)
+            if excluded_rgs:
+                self.logger.success(f"Found {total_rgs} total resource groups{sub_display}: {len(resource_groups)} to process, {len(excluded_rgs)} excluded")
             else:
-                self.logger.success(f"Found {len(resource_groups)} resource groups")
+                self.logger.success(f"Found {len(resource_groups)} resource groups{sub_display} (none excluded)")
+            
             return resource_groups
             
         except subprocess.TimeoutExpired:
@@ -266,65 +351,48 @@ class ExportManager:
             env['TERM'] = 'dumb'  # Set terminal type to dumb
             env['NO_COLOR'] = '1'  # Disable color output
             
-            # Use script command to emulate TTY if available (required for aztfexport)
-            # This prevents "open /dev/tty: no such device or address" errors
+            # Use script to emulate TTY (prevents aztfexport TTY errors)
             import shutil
             script_cmd = shutil.which('script')
             
             if script_cmd:
-                # Use script to create a pseudo-TTY
-                # Build command string with proper quoting
                 cmd_str = ' '.join(f'"{arg}"' if ' ' in arg or '"' in arg else arg for arg in cmd)
-                script_wrapper = [
-                    script_cmd,
-                    '-q',  # Quiet mode - suppresses script's own output
-                    '-e',  # Return exit code
-                    '-c',  # Command to run
-                    cmd_str
-                ]
+                script_wrapper = [script_cmd, '-q', '-e', '-c', cmd_str]
                 final_cmd = script_wrapper
             else:
-                # Fallback: run directly (may fail with TTY errors)
                 final_cmd = cmd
             
-            # Use Popen for real-time output streaming
             self.logger.info(f"Starting export for {resource_group}...")
             process = subprocess.Popen(
                 final_cmd,
                 cwd=str(Path(self.base_dir).resolve()),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # Merge stderr into stdout to capture all output
+                stderr=subprocess.STDOUT,
                 env=env,
                 text=True,
-                bufsize=1,  # Line buffered for real-time output
+                bufsize=1,
                 universal_newlines=True
             )
             
-            # Stream output in real-time with deduplication
             output_lines = []
-            seen_lines = set()  # Track seen lines to prevent duplicates
+            seen_lines = set()
             
             try:
                 import sys
                 for line in iter(process.stdout.readline, ''):
                     if line:
                         line = line.rstrip()
-                        # Only add to output_lines if not a duplicate
                         if line not in seen_lines:
                             seen_lines.add(line)
                             output_lines.append(line)
-                            # Print directly for real-time visibility in pipeline
                             sys.stdout.write(line + '\n')
                             sys.stdout.flush()
             finally:
                 process.stdout.close()
                 exit_code = process.wait(timeout=3600)
             
-            # Store full output for error analysis
             full_output = '\n'.join(output_lines)
-            
-            # Clear completion message - make it very visible
             self.logger.info("")
             if exit_code == 0:
                 self.logger.info("=" * 60)
@@ -335,7 +403,6 @@ class ExportManager:
                 self.logger.error(f"✗ EXPORT FAILED for {resource_group} (exit code: {exit_code})")
                 self.logger.info("=" * 60)
             
-            # Check return code
             if exit_code == 0:
                 tf_files_direct = list(output_path.glob('*.tf'))
                 tf_files_recursive = list(output_path.rglob('*.tf'))
@@ -412,8 +479,7 @@ class ExportManager:
         sub_dir.mkdir(parents=True, exist_ok=True)
         
         self.logger.info("Discovering resource groups...")
-        resource_groups = self._get_resource_groups(subscription_id)
-        self.logger.info(f"Found {len(resource_groups)} resource groups")
+        resource_groups = self._get_resource_groups(subscription_id, subscription_name)
         
         results = {
             'subscription_id': subscription_id,
@@ -461,7 +527,11 @@ class ExportManager:
         return results
     
     def export_all_subscriptions(self) -> Dict[str, Any]:
-        """Export all enabled subscriptions"""
+        """Export all enabled subscriptions
+        
+        By default, all subscriptions accessible via Azure CLI are exported unless:
+        - subscription ID is in exclude_subscriptions list
+        """
         try:
             self._install_aztfexport()
         except Exception as e:
@@ -469,23 +539,42 @@ class ExportManager:
             return {}
         
         Path(self.base_dir).mkdir(parents=True, exist_ok=True)
-        subscriptions = self.config.get('subscriptions', [])
+        
+        subscriptions = self.get_subscriptions_from_azure()
+        if not subscriptions:
+            self.logger.error("No subscriptions found. Check Azure CLI authentication and permissions.")
+            return {}
+        
+        exclude_subscriptions_raw = self.config.get('exclude_subscriptions', {})
+        # Flatten prod and non-prod lists into single list
+        if isinstance(exclude_subscriptions_raw, dict):
+            prod_list = exclude_subscriptions_raw.get('prod') or []
+            non_prod_list = exclude_subscriptions_raw.get('non-prod') or []
+            exclude_subscriptions = (prod_list if isinstance(prod_list, list) else []) + (non_prod_list if isinstance(non_prod_list, list) else [])
+        else:
+            # Backward compatibility: if it's a list, use it directly
+            exclude_subscriptions = exclude_subscriptions_raw if isinstance(exclude_subscriptions_raw, list) else []
         create_rg_folders = self.config.get('output', {}).get('create_rg_folders', True)
         all_results = {}
         
         for sub in subscriptions:
-            if not sub.get('export_enabled', True):
-                self.logger.info(f"Skipping subscription {sub['id']} (export disabled)")
+            subscription_id = sub.get('id')
+            subscription_name = sub.get('name', subscription_id)
+            
+            # Check exclusion by ID or name
+            is_excluded = subscription_id in exclude_subscriptions or subscription_name in exclude_subscriptions
+            if is_excluded:
+                self.logger.info(f"Skipping subscription {subscription_name} ({subscription_id}) (in exclude_subscriptions list)")
                 continue
             
             try:
                 result = self.export_subscription(sub, create_rg_folders)
-                all_results[sub['id']] = result
+                all_results[subscription_id] = result
             except Exception as e:
-                self.logger.error(f"Error exporting subscription {sub['id']}: {str(e)}")
-                all_results[sub['id']] = {
-                    'subscription_id': sub['id'],
-                    'subscription_name': sub['name'],
+                self.logger.error(f"Error exporting subscription {subscription_id}: {str(e)}")
+                all_results[subscription_id] = {
+                    'subscription_id': subscription_id,
+                    'subscription_name': sub.get('name', subscription_id),
                     'error': str(e)
                 }
         
@@ -507,4 +596,39 @@ class ExportManager:
         
         git_manager = GitManager(self.config)
         return git_manager.push_to_repo(subscription, export_path)
+    
+    def cleanup_export_directory(self, subscription: Dict[str, Any]) -> bool:
+        """Clean up export directory after successful git push"""
+        subscription_name = subscription.get('name')
+        if not subscription_name:
+            return False
+        
+        try:
+            sub_dir = Path(self.base_dir) / self._sanitize_name(subscription_name)
+            if sub_dir.exists():
+                import shutil
+                shutil.rmtree(sub_dir)
+                self.logger.info(f"Cleaned up export directory: {sub_dir}")
+                return True
+        except Exception as e:
+            self.logger.warning(f"Failed to cleanup export directory: {str(e)}")
+            return False
+    
+    def check_disk_space(self, min_free_percent: float = 5.0) -> bool:
+        """Check if there's enough free disk space"""
+        try:
+            import shutil
+            stat = shutil.disk_usage(self.base_dir)
+            free_percent = (stat.free / stat.total) * 100
+            
+            if free_percent < min_free_percent:
+                self.logger.warning(f"⚠️  Low disk space: {free_percent:.1f}% free (minimum: {min_free_percent}%)")
+                self.logger.warning(f"   Total: {stat.total / (1024**3):.2f} GB, Free: {stat.free / (1024**3):.2f} GB")
+                return False
+            else:
+                self.logger.debug(f"Disk space check: {free_percent:.1f}% free")
+                return True
+        except Exception as e:
+            self.logger.warning(f"Could not check disk space: {str(e)}")
+            return True  # Continue if check fails
 

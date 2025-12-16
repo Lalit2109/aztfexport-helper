@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urlparse
 from logger import get_logger
 
 
@@ -21,71 +21,45 @@ class GitManager:
         self.git_config = config.get('git', {})
         
     def _get_repo_url(self, subscription: Dict[str, Any]) -> Optional[str]:
-        """Get repository URL for a subscription"""
-        repo_url = subscription.get('repo_url')
-        if repo_url:
-            # URL encode spaces and special characters in the URL
-            return self._encode_repo_url(repo_url)
-        
-        repo_name = subscription.get('repo_name')
-        if not repo_name:
+        """Get repository URL for a subscription using subscription name"""
+        subscription_name = subscription.get('name')
+        if not subscription_name:
             return None
         
         org = self.azure_devops_config.get('organization')
         project = self.azure_devops_config.get('project')
         
         if org and project:
-            # URL encode org, project, and repo_name
+            # Use original subscription name (don't sanitize) - Azure DevOps supports spaces
+            # URL encoding will handle spaces and special characters properly
             encoded_org = quote(org, safe='')
             encoded_project = quote(project, safe='')
-            encoded_repo = quote(repo_name, safe='')
+            encoded_repo = quote(subscription_name, safe='')  # Don't sanitize, just encode
             return f"https://dev.azure.com/{encoded_org}/{encoded_project}/_git/{encoded_repo}"
         
         return None
     
-    def _encode_repo_url(self, url: str) -> str:
-        """URL encode spaces and special characters in repository URL"""
-        try:
-            parsed = urlparse(url)
-            # Encode path components
-            path_parts = parsed.path.split('/')
-            encoded_parts = [quote(part, safe='') for part in path_parts]
-            encoded_path = '/'.join(encoded_parts)
-            
-            # Reconstruct URL with encoded path
-            encoded_url = urlunparse((
-                parsed.scheme,
-                parsed.netloc,
-                encoded_path,
-                parsed.params,
-                parsed.query,
-                parsed.fragment
-            ))
-            return encoded_url
-        except Exception:
-            # Fallback: simple replacement for spaces
-            return url.replace(' ', '%20')
+    def _sanitize_name(self, name: str) -> str:
+        """Sanitize name for filesystem/repository"""
+        import re
+        name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+        return name.lower()
+    
     
     def _get_pat_token(self) -> Optional[str]:
         """Get Azure DevOps PAT token from environment"""
         return os.getenv('AZURE_DEVOPS_PAT') or os.getenv('SYSTEM_ACCESS_TOKEN')
     
     def _get_branch(self, subscription: Dict[str, Any]) -> str:
-        """Get branch name for subscription with date and time"""
+        """Get main branch name (always main for latest export)"""
+        base_branch = os.getenv('GIT_BRANCH') or self.git_config.get('branch', 'main')
+        return base_branch  # Always use main for latest
+    
+    def _get_backup_branch_name(self) -> str:
+        """Get backup branch name with current date"""
         from datetime import datetime
-        
-        # Get base branch name
-        base_branch = (
-            subscription.get('branch') or 
-            os.getenv('GIT_BRANCH') or 
-            self.git_config.get('branch', 'main')
-        )
-        
-        # Format: YYYY-MM-DD-HHMM
-        date_str = datetime.now().strftime('%Y-%m-%d-%H%M')
-        branch_name = f"{base_branch}-{date_str}"
-        
-        return branch_name
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        return f"backup-{date_str}"
     
     def _configure_git_credentials(self, repo_url: str) -> bool:
         """Configure git credentials for Azure DevOps"""
@@ -176,7 +150,6 @@ This repository contains Terraform code for Azure resources exported from subscr
 
 - **Subscription ID**: `{subscription.get('id', 'N/A')}`
 - **Subscription Name**: {subscription.get('name', 'N/A')}
-- **Environment**: {subscription.get('environment', 'N/A')}
 
 ## Structure
 
@@ -278,6 +251,141 @@ resource-group-name/
             self.logger.warning(f"Error checking out branch: {str(e)}")
             return False
     
+    def _create_backup_branch(self, repo_path: Path, branch: str, backup_branch: str, repo_url: str) -> bool:
+        """Create a backup branch from the current branch"""
+        try:
+            # Create backup branch from current branch
+            result = subprocess.run(
+                ['git', 'branch', backup_branch],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0 and 'already exists' not in result.stderr.lower():
+                self.logger.warning(f"Could not create backup branch: {result.stderr}")
+                return False
+            
+            # Push backup branch
+            pat_token = self._get_pat_token()
+            if not pat_token:
+                self.logger.warning("PAT token not available for backup branch push")
+                return False
+            
+            if 'dev.azure.com' in repo_url:
+                auth_url = f'https://{pat_token}@dev.azure.com'
+                repo_url_with_auth = repo_url.replace('https://dev.azure.com', auth_url)
+            else:
+                repo_url_with_auth = repo_url
+            
+            push_result = subprocess.run(
+                ['git', 'push', 'origin', backup_branch, '--force'],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
+            )
+            
+            if push_result.returncode == 0:
+                self.logger.info(f"Created backup branch: {backup_branch}")
+                return True
+            else:
+                self.logger.warning(f"Could not push backup branch: {push_result.stderr}")
+                return False
+        except Exception as e:
+            self.logger.warning(f"Error creating backup branch: {str(e)}")
+            return False
+    
+    def _cleanup_old_backup_branches(self, repo_path: Path, repo_url: str, retention_count: int = 10) -> bool:
+        """Clean up backup branches, keeping only the most recent N (retention_count)"""
+        try:
+            from datetime import datetime
+            import re
+            
+            # Get all remote backup branches
+            pat_token = self._get_pat_token()
+            if not pat_token:
+                self.logger.warning("PAT token not available for branch cleanup")
+                return False
+            
+            if 'dev.azure.com' in repo_url:
+                auth_url = f'https://{pat_token}@dev.azure.com'
+                repo_url_with_auth = repo_url.replace('https://dev.azure.com', auth_url)
+            else:
+                repo_url_with_auth = repo_url
+            
+            result = subprocess.run(
+                ['git', 'ls-remote', '--heads', repo_url_with_auth, 'backup-*'],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                self.logger.debug("No backup branches found to cleanup")
+                return True
+            
+            branches_with_dates = []
+            
+            # Parse branch names and check dates
+            for line in result.stdout.strip().split('\n'):
+                if not line.strip():
+                    continue
+                
+                # Extract branch name (format: refs/heads/backup-YYYY-MM-DD)
+                match = re.search(r'refs/heads/(backup-\d{4}-\d{2}-\d{2})', line)
+                if match:
+                    branch_name = match.group(1)
+                    date_str = branch_name.replace('backup-', '')
+                    try:
+                        branch_date = datetime.strptime(date_str, '%Y-%m-%d')
+                        branches_with_dates.append((branch_name, branch_date))
+                    except ValueError:
+                        self.logger.warning(f"Could not parse date from branch: {branch_name}")
+                        continue
+
+            if not branches_with_dates:
+                self.logger.debug("No parsable backup branches found to cleanup")
+                return True
+
+            # Sort branches by date (newest first)
+            branches_with_dates.sort(key=lambda x: x[1], reverse=True)
+
+            # Determine which branches to keep and which to delete
+            branches_to_keep = [b for b, _ in branches_with_dates[:retention_count]]
+            branches_to_delete = [b for b, _ in branches_with_dates[retention_count:]]
+
+            if branches_to_delete:
+                self.logger.info(
+                    f"Cleaning up {len(branches_to_delete)} old backup branch(es) "
+                    f"(keeping {len(branches_to_keep)} most recent)"
+                )
+
+                for branch in branches_to_delete:
+                    try:
+                        # Delete remote branch
+                        delete_result = subprocess.run(
+                            ['git', 'push', 'origin', '--delete', branch],
+                            cwd=str(repo_path),
+                            capture_output=True,
+                            text=True,
+                            env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_ASKPASS': 'echo'}
+                        )
+                        
+                        if delete_result.returncode == 0:
+                            self.logger.debug(f"Deleted old backup branch: {branch}")
+                        else:
+                            self.logger.warning(f"Could not delete branch {branch}: {delete_result.stderr}")
+                    except Exception as e:
+                        self.logger.warning(f"Error deleting branch {branch}: {str(e)}")
+            else:
+                self.logger.debug("No old backup branches to cleanup")
+            
+            return True
+        except Exception as e:
+            self.logger.warning(f"Error cleaning up old backup branches: {str(e)}")
+            return False
+    
     def _commit_changes(self, repo_path: Path, subscription: Dict[str, Any]) -> bool:
         """Commit all changes to git"""
         try:
@@ -309,38 +417,30 @@ resource-group-name/
             self.logger.error(f"Failed to commit changes: {e.stderr.decode()}")
             return False
     
-    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str, repo_name: str = None) -> bool:
-        """Push changes to remote repository"""
+    def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str, is_main: bool = False) -> bool:
+        """Push changes to remote repository
+        
+        Note: These repositories are used only for backup, so force-push is acceptable
+        for both main and backup branches.
+        """
         pat_token = self._get_pat_token()
         if not pat_token:
             self.logger.error("PAT token not available for push")
             return False
         
         try:
-            # The repo_url is already URL-encoded from _get_repo_url()
-            # We just need to add authentication without re-encoding
-            
-            # Update remote URL with authentication
             if 'dev.azure.com' in repo_url:
-                # Parse the URL to extract org
                 parsed = urlparse(repo_url)
                 path_parts = [p for p in parsed.path.split('/') if p]
                 
-                # Extract org from path (first part after /)
                 if len(path_parts) > 0:
-                    # Decode to get original org name for auth URL construction
-                    org_encoded = path_parts[0]
-                    # Build auth URL with PAT token
                     auth_url = f'https://{pat_token}@dev.azure.com'
-                    # Replace the scheme and netloc with authenticated version
                     repo_url_with_auth = repo_url.replace('https://dev.azure.com', auth_url)
                 else:
                     repo_url_with_auth = repo_url.replace('https://dev.azure.com', f'https://{pat_token}@dev.azure.com')
             else:
                 repo_url_with_auth = repo_url
             
-            # Don't re-encode - the URL is already properly encoded from _get_repo_url()
-            # Update remote URL with authenticated URL (already encoded)
             subprocess.run(
                 ['git', 'remote', 'set-url', 'origin', repo_url_with_auth],
                 cwd=str(repo_path),
@@ -348,8 +448,8 @@ resource-group-name/
                 capture_output=True,
                 text=True
             )
-            
-            # Push with authentication
+
+            # Push with authentication (force push is acceptable for backup repos)
             result = subprocess.run(
                 ['git', 'push', '-u', 'origin', branch, '--force'],
                 cwd=str(repo_path),
@@ -372,8 +472,7 @@ resource-group-name/
                     self.logger.error("Please create the repository first:")
                     self.logger.error(f"  Organization: {self.azure_devops_config.get('organization', 'N/A')}")
                     self.logger.error(f"  Project: {self.azure_devops_config.get('project', 'N/A')}")
-                    if repo_name:
-                        self.logger.error(f"  Repository: {repo_name}")
+                    self.logger.error(f"  Repository: {repo_url.split('/_git/')[-1] if '/_git/' in repo_url else 'N/A'}")
                     self.logger.error("")
                     self.logger.error("You can create it via:")
                     self.logger.error("  - Azure DevOps Portal: Repos > New Repository")
@@ -398,9 +497,14 @@ resource-group-name/
             self.logger.warning(f"No repository URL configured for subscription {subscription.get('id')}")
             return False
         
-        branch = self._get_branch(subscription)
+        main_branch = self._get_branch(subscription)  # Returns "main"
+        backup_branch = self._get_backup_branch_name()  # Returns "backup-YYYY-MM-DD"
+        # Keep only the last N backup branches (by date)
+        retention_count = int(self.git_config.get('backup_retention_count', 10))
+        
         self.logger.info(f"Pushing to repository: {repo_url}")
-        self.logger.info(f"Branch: {branch}")
+        self.logger.info(f"Main branch: {main_branch} (latest export)")
+        self.logger.info(f"Backup branch: {backup_branch} (keeping last {retention_count} runs)")
         
         if not self._configure_git_credentials(repo_url):
             return False
@@ -414,15 +518,25 @@ resource-group-name/
         if not self._add_remote(export_path, repo_url):
             return False
         
-        if not self._checkout_branch(export_path, branch):
+        # Checkout main branch
+        if not self._checkout_branch(export_path, main_branch):
             self.logger.warning("Continuing with current branch")
         
         if not self._commit_changes(export_path, subscription):
             return False
         
-        repo_name = subscription.get('repo_name', 'N/A')
-        if not self._push_to_remote(export_path, branch, repo_url, repo_name):
+        # Push to main branch (latest)
+        if not self._push_to_remote(export_path, main_branch, repo_url, is_main=True):
             return False
+        
+        # Create backup branch
+        self.logger.info(f"Creating backup branch: {backup_branch}")
+        if not self._create_backup_branch(export_path, main_branch, backup_branch, repo_url):
+            self.logger.warning("Failed to create backup branch, but main push succeeded")
+        
+        # Cleanup old backup branches
+        self.logger.info(f"Cleaning up backup branches, keeping last {retention_count} runs...")
+        self._cleanup_old_backup_branches(export_path, repo_url, retention_count)
         
         self.logger.success(f"Successfully pushed to repository: {repo_url}")
         return True

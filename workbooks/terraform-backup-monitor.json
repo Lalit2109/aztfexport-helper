@@ -1,0 +1,276 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "timeRange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "type": 4,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ],
+              "allowCustom": true
+            }
+          },
+          {
+            "id": "subscriptionFilter",
+            "version": "KqlParameterItem/1.0",
+            "name": "Subscription",
+            "type": 1,
+            "query": "Infra_terraform_backup\n| distinct SubscriptionName\n| project value = SubscriptionName, label = SubscriptionName",
+            "crossComponentResources": [
+              "{Subscriptions}"
+            ],
+            "isRequired": false,
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Terraform Backup Status Overview\n\nThis workbook monitors Azure infrastructure Terraform backup exports, tracking subscription-level export status, timing, resource group counts, and git push operations."
+      },
+      "name": "header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Infra_terraform_backup\n| where TimeGenerated >= ago({TimeRange:value})\n| summarize\n    TotalExports = count(),\n    SuccessfulExports = countif(Status == \"success\"),\n    FailedExports = countif(Status == \"failed\"),\n    AvgDuration = avg(DurationSeconds),\n    TotalRGs = sum(TotalResourceGroups),\n    SuccessfulRGs = sum(SuccessfulResourceGroups),\n    FailedRGs = sum(FailedResourceGroups)\n| extend\n    SuccessRate = round((SuccessfulExports * 100.0 / TotalExports), 2),\n    AvgDurationMinutes = round((AvgDuration / 60), 2)\n| project\n    TotalExports,\n    SuccessfulExports,\n    FailedExports,\n    SuccessRate,\n    AvgDurationMinutes,\n    TotalRGs,\n    SuccessfulRGs,\n    FailedRGs",
+        "size": 0,
+        "aggregation": 0,
+        "showAnalytics": true,
+        "title": "Summary Statistics",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "timeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "SuccessRate",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "auto"
+              }
+            }
+          ]
+        }
+      },
+      "name": "summary"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Infra_terraform_backup\n| where TimeGenerated >= ago({TimeRange:value})\n| where isempty('{subscriptionFilter:value}') or SubscriptionName == '{subscriptionFilter:value}'\n| summarize\n    Exports = count(),\n    Success = countif(Status == \"success\"),\n    Failed = countif(Status == \"failed\"),\n    AvgDuration = avg(DurationSeconds),\n    TotalRGs = sum(TotalResourceGroups),\n    SuccessfulRGs = sum(SuccessfulResourceGroups)\n| extend\n    SuccessRate = round((Success * 100.0 / Exports), 2),\n    AvgDurationMinutes = round((AvgDuration / 60), 2)\n| project\n    SubscriptionName = coalesce(SubscriptionName, \"Unknown\"),\n    Exports,\n    Success,\n    Failed,\n    SuccessRate,\n    AvgDurationMinutes,\n    TotalRGs,\n    SuccessfulRGs\n| order by Exports desc",
+        "size": 0,
+        "aggregation": 0,
+        "showAnalytics": true,
+        "title": "Subscription Status",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "timeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "SuccessRate",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "auto"
+              }
+            },
+            {
+              "columnMatch": "AvgDurationMinutes",
+              "formatter": 5,
+              "formatOptions": {
+                "format": "0.00"
+              }
+            }
+          ]
+        }
+      },
+      "name": "subscription-status"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Infra_terraform_backup\n| where TimeGenerated >= ago({TimeRange:value})\n| where isempty('{subscriptionFilter:value}') or SubscriptionName == '{subscriptionFilter:value}'\n| summarize count() by Status, bin(TimeGenerated, 1h)\n| render timechart",
+        "size": 0,
+        "aggregation": 0,
+        "showAnalytics": true,
+        "title": "Export Status Over Time",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "timeRange",
+        "visualization": "linechart"
+      },
+      "name": "status-timeline"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Infra_terraform_backup\n| where TimeGenerated >= ago({TimeRange:value})\n| where isempty('{subscriptionFilter:value}') or SubscriptionName == '{subscriptionFilter:value}'\n| summarize\n    AvgDuration = avg(DurationSeconds),\n    MinDuration = min(DurationSeconds),\n    MaxDuration = max(DurationSeconds)\n| extend\n    AvgMinutes = round((AvgDuration / 60), 2),\n    MinMinutes = round((MinDuration / 60), 2),\n    MaxMinutes = round((MaxDuration / 60), 2)\n| project\n    AvgMinutes,\n    MinMinutes,\n    MaxMinutes",
+        "size": 0,
+        "aggregation": 0,
+        "showAnalytics": true,
+        "title": "Duration Statistics (Minutes)",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "timeRange",
+        "visualization": "table"
+      },
+      "name": "duration-stats"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Infra_terraform_backup\n| where TimeGenerated >= ago({TimeRange:value})\n| where isempty('{subscriptionFilter:value}') or SubscriptionName == '{subscriptionFilter:value}'\n| summarize count() by GitPushStatus\n| render piechart",
+        "size": 0,
+        "aggregation": 0,
+        "showAnalytics": true,
+        "title": "Git Push Status Distribution",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "timeRange",
+        "visualization": "piechart"
+      },
+      "name": "git-push-status"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Infra_terraform_backup\n| where TimeGenerated >= ago({TimeRange:value})\n| where isempty('{subscriptionFilter:value}') or SubscriptionName == '{subscriptionFilter:value}'\n| where Status == \"failed\"\n| project\n    TimeGenerated,\n    SubscriptionName,\n    SubscriptionId,\n    TotalResourceGroups,\n    SuccessfulResourceGroups,\n    FailedResourceGroups,\n    GitPushStatus,\n    ErrorMessage\n| order by TimeGenerated desc\n| take 50",
+        "size": 0,
+        "aggregation": 0,
+        "showAnalytics": true,
+        "title": "Recent Failures",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "timeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "ErrorMessage",
+              "formatter": 5,
+              "formatOptions": {
+                "format": "text"
+              }
+            }
+          ]
+        }
+      },
+      "name": "recent-failures"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Infra_terraform_backup\n| where TimeGenerated >= ago({TimeRange:value})\n| where isempty('{subscriptionFilter:value}') or SubscriptionName == '{subscriptionFilter:value}'\n| summarize\n    TotalRGs = sum(TotalResourceGroups),\n    SuccessfulRGs = sum(SuccessfulResourceGroups),\n    FailedRGs = sum(FailedResourceGroups)\n| extend\n    SuccessRate = round((SuccessfulRGs * 100.0 / TotalRGs), 2)\n| project\n    TotalRGs,\n    SuccessfulRGs,\n    FailedRGs,\n    SuccessRate",
+        "size": 0,
+        "aggregation": 0,
+        "showAnalytics": true,
+        "title": "Resource Group Export Summary",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "timeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "SuccessRate",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "auto"
+              }
+            }
+          ]
+        }
+      },
+      "name": "rg-summary"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Infra_terraform_backup\n| where TimeGenerated >= ago({TimeRange:value})\n| where isempty('{subscriptionFilter:value}') or SubscriptionName == '{subscriptionFilter:value}'\n| project\n    TimeGenerated,\n    SubscriptionName,\n    Status,\n    DurationMinutes = round((DurationSeconds / 60), 2),\n    TotalResourceGroups,\n    SuccessfulResourceGroups,\n    FailedResourceGroups,\n    GitPushStatus\n| order by TimeGenerated desc\n| take 100",
+        "size": 0,
+        "aggregation": 0,
+        "showAnalytics": true,
+        "title": "Recent Export Activity",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "timeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Status",
+              "formatter": 5,
+              "formatOptions": {
+                "palette": "auto"
+              }
+            },
+            {
+              "columnMatch": "GitPushStatus",
+              "formatter": 5,
+              "formatOptions": {
+                "palette": "auto"
+              }
+            }
+          ]
+        }
+      },
+      "name": "recent-activity"
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/{Subscriptions}"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
+
+

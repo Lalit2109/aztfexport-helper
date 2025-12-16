@@ -1,126 +1,72 @@
 # Azure Subscriptions Configuration
-# Configure your 35 subscriptions here
 
-# Global exclusions (applied to all subscriptions)
-# These resource groups are excluded from export across all subscriptions
-# Wildcard patterns are supported (* and ?)
+# Exclude subscriptions from export (all others are exported)
+# Can exclude by subscription ID or subscription name
+exclude_subscriptions:
+  prod: []
+    # - "subscription-id-prod-1"  # Exclude by ID
+    # - "Production Subscription Name"  # Exclude by name
+  non-prod: []
+    # - "subscription-id-non-prod-1"  # Exclude by ID
+    # - "Development Subscription Name"  # Exclude by name
+
+# Global resource group exclusions (wildcards supported: *, ?)
 global_excludes:
   resource_groups:
-    # Azure-managed/system resource groups (wildcard supported)
     - "Built-in-identity-rg"
     - "networkwatcherRG"
-    - "NetworkWatcherRG_*"        # Network Watcher (all regions)
-    - "AzureBackupRG_*"           # Azure Backup
-    - "AzureSiteRecoveryRG_*"     # Azure Site Recovery
-    - "MC_*"                      # AKS managed clusters
-    - "azure-arc"                 # Azure Arc
-    - "DefaultResourceGroup-*"    # Default resource groups
-    # Add more patterns as needed
-    # - "rg-system-*"
-    # - "rg-azure-*"
+    - "NetworkWatcherRG_*"
+    - "AzureBackupRG_*"
+    - "AzureSiteRecoveryRG_*"
+    - "MC_*"
+    - "azure-arc"
+    - "DefaultResourceGroup-*"
 
-# Logging configuration
+# Logging (DEBUG, INFO, ERROR) - can override via LOG_LEVEL env var
 logging:
-  # Log level: DEBUG, INFO, or ERROR
-  # DEBUG: Shows all messages including detailed debug information
-  # INFO: Shows informational messages, warnings, and errors (default)
-  # ERROR: Shows only error messages
-  # Can also be set via environment variable: LOG_LEVEL=DEBUG
   level: INFO
 
-subscriptions:
-  - id: "subscription-id-1"
-    name: "Production Subscription 1"
-    environment: "prod"
-    export_enabled: true
-    # Repository configuration (optional)
-    # repo_name: "terraform-prod-sub-1"  # Repository name (will be created if doesn't exist)
-    # repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"  # Full repository URL
-    # branch: "main"  # Override default branch
-    
-  - id: "subscription-id-2"
-    name: "Development Subscription 1"
-    environment: "dev"
-    export_enabled: true
-    # repo_name: "terraform-dev-sub-1"
-    # repo_url: "https://dev.azure.com/org/project/_git/terraform-dev-sub-1"
-    # branch: "develop"  # Different branch for dev
-    
-  # Add remaining 33 subscriptions here
-  # Template:
-  # - id: "subscription-id-X"
-  #   name: "Subscription Name"
-  #   environment: "prod|dev|staging"
-  #   export_enabled: true|false
+# Subscriptions are auto-discovered from Azure CLI (no manual list needed)
 
 # aztfexport configuration
 aztfexport:
-  # Resource types to export (empty = export all)
-  # Example: ["Microsoft.Compute/virtualMachines", "Microsoft.Network/virtualNetworks"]
+  # Resource types to export (empty = all)
   resource_types: []
   
-  # Resource groups to exclude from export (subscription-specific)
-  # Supports exact match and wildcard patterns (* and ?)
-  # These are in addition to global_excludes above
-  # Example:
-  # exclude_resource_groups:
-  #   - "rg-exclude-this"        # Exact match
-  #   - "rg-test-*"              # Wildcard pattern
-  #   - "rg-temp-resources"
+  # Resource groups to exclude (in addition to global_excludes)
   exclude_resource_groups: []
   
-  # Resources to exclude (by ID pattern)
-  # Example: ["/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.xxx/xxx"]
+  # Resources to exclude by full ID
   exclude_resources: []
   
-  # Resource types to exclude using Azure Resource Graph query mode
-  # When specified, aztfexport will use query mode to exclude these resource types
-  # Example: ["Microsoft.Insights/components", "Microsoft.OperationalInsights/workspaces/savedSearches"]
-  # Note: This uses Azure Resource Graph queries (more efficient than --exclude flags)
-  # For nested resources, use the full path: "Microsoft.OperationalInsights/workspaces/savedSearches"
+  # Resource types to exclude (uses Resource Graph query mode)
   exclude_resource_types: []
   
-  # Custom Azure Resource Graph query (optional, overrides exclude_resource_types)
-  # If provided, this query will be used directly in aztfexport query mode
-  # Example: "type != 'Microsoft.OperationalInsights/workspaces/savedSearches' and type != 'Microsoft.Insights/components'"
-  # Leave empty to auto-generate query from exclude_resource_types
+  # Custom Resource Graph query (overrides exclude_resource_types if set)
   query: null
   
   # Additional aztfexport flags
-  # Example: ["--parallelism", "5"]
   additional_flags: []
 
 # Azure DevOps configuration
 azure_devops:
   organization: "your-org"
   project: "your-project"
-  # Service connection name for Azure authentication (configured in pipeline variable group)
-  service_connection: "Azure-ServiceConnection"
 
 # Git configuration
 git:
-  # Whether to push exported code to git repositories
-  # Can be overridden via PUSH_TO_REPOS environment variable
+  # Push to repos (can override via PUSH_TO_REPOS env var)
   push_to_repos: false
-  
-  # Default branch name for git repositories
-  # Can be overridden per subscription
   branch: "main"
+  # Number of recent backup branches (runs) to keep (default: 10)
+  backup_retention_count: 10
 
-# Note: This tool uses Azure CLI (az) for all Azure operations
-# Azure CLI handles SSL certificates automatically, so no SSL configuration needed
-  
 # Output configuration
 output:
-  # Base directory for exports (relative to workspace or absolute path)
-  # Folder structure will be: {base_dir}/{subscription-name}/{resource-group-name}/
-  # Default: "./exports"
   base_dir: "./exports"
-  
-  # Whether to create resource group subfolders under subscription folder
-  # If true: {base_dir}/{subscription-name}/{resource-group-name}/
-  # If false: {base_dir}/{subscription-name}/ (all resources in subscription folder)
-  # Default: true
+  # Create resource group subfolders (true) or flat subscription folder (false)
   create_rg_folders: true
+  # Clean up export directory after successful git push (saves disk space)
+  cleanup_after_push: true
   
 
