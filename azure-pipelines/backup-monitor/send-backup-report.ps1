@@ -29,13 +29,13 @@ param(
     [string] $SendGridTo,
 
     [Parameter(Mandatory = $false)]
-    [string] $Environment = "Prod",
+    [string] $EnvName = "Prod",
 
     [Parameter(Mandatory = $false)]
     [int] $LookbackHours = 24
 )
 
-Write-Host "Starting Terraform backup report. Environment=$Environment LookbackHours=$LookbackHours"
+Write-Host "Starting Terraform backup report. Environment=$EnvName LookbackHours=$LookbackHours"
 
 # Ensure required modules
 if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
@@ -106,7 +106,7 @@ if ($reportDataCount -eq 0) {
     # No data → simple notification
     $htmlBody = @"
 <h2>Terraform Backup Report (Last $LookbackHours Hours)</h2>
-<p><strong>Environment:</strong> $Environment</p>
+<p><strong>Environment:</strong> $EnvName</p>
 <p><strong>Report Period:</strong> $($fromTime.ToString('u')) to $($nowUtc.ToString('u')) (UTC)</p>
 <p><strong>Status:</strong> No backup records found in Log Analytics for this period.</p>
 "@
@@ -131,7 +131,7 @@ else {
 
     $summaryHtml = @"
 <h2>Terraform Backup Report (Last $LookbackHours Hours)</h2>
-<p><strong>Environment:</strong> $Environment</p>
+<p><strong>Environment:</strong> $EnvName</p>
 <p><strong>Report Period:</strong> $($fromTime.ToString('u')) to $($nowUtc.ToString('u')) (UTC)</p>
 <p><strong>Report Generated:</strong> $($nowUtc.ToString('u')) (UTC)</p>
 
@@ -213,7 +213,7 @@ else {
 }
 
 # Build SendGrid payload
-$subjectPrefix = "[$Environment] Terraform Backup"
+$subjectPrefix = "[$EnvName] Terraform Backup"
 $subject = "$subjectPrefix - Report (Last $LookbackHours Hours)"
 
 $toList = $SendGridTo.Split(",", [System.StringSplitOptions]::RemoveEmptyEntries).ForEach({ $_.Trim() }) | Where-Object { $_ }

@@ -180,7 +180,7 @@ stages:
           -SendGridApiKey "$(SendGridApiKey)"
           -SendGridFrom "$(SendGridFrom)"
           -SendGridTo "$(SendGridTo)"
-          -Environment "$(Environment)"
+          -EnvName "$(Environment)"
           -LookbackHours 24
         azurePowerShellVersion: 'LatestVersion'
       continueOnError: true  # Don't fail pipeline if email fails
