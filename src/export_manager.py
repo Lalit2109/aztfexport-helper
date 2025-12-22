@@ -269,15 +269,95 @@ class ExportManager:
         
         return " and ".join(conditions)
     
+    def _parse_aztfexport_output(self, output: str) -> Dict[str, Any]:
+        """Parse aztfexport output to extract resource statistics"""
+        import re
+        stats = {
+            'total_resources': 0,
+            'exported_resources': 0,
+            'failed_resources': 0,
+            'skipped_resources': 0,
+            'error_type': None,
+            'error_details': []
+        }
+        
+        output_lower = output.lower()
+        
+        # Try to find resource counts in output
+        # Common patterns: "exported X resources", "X resources exported", "failed: X", etc.
+        patterns = [
+            (r'exported\s+(\d+)\s+resources?', 'exported_resources'),
+            (r'(\d+)\s+resources?\s+exported', 'exported_resources'),
+            (r'successfully\s+exported\s+(\d+)', 'exported_resources'),
+            (r'failed\s+to\s+export\s+(\d+)', 'failed_resources'),
+            (r'(\d+)\s+resources?\s+failed', 'failed_resources'),
+            (r'skipped\s+(\d+)\s+resources?', 'skipped_resources'),
+            (r'(\d+)\s+resources?\s+skipped', 'skipped_resources'),
+            (r'total\s+(\d+)\s+resources?', 'total_resources'),
+            (r'(\d+)\s+total\s+resources?', 'total_resources'),
+        ]
+        
+        for pattern, key in patterns:
+            matches = re.findall(pattern, output_lower)
+            if matches:
+                try:
+                    value = int(matches[-1])  # Take the last match
+                    if stats[key] == 0:  # Only set if not already found
+                        stats[key] = value
+                except (ValueError, IndexError):
+                    pass
+        
+        # If we found exported but no total, estimate total
+        if stats['total_resources'] == 0 and stats['exported_resources'] > 0:
+            stats['total_resources'] = stats['exported_resources'] + stats['failed_resources'] + stats['skipped_resources']
+        
+        # Categorize errors
+        permission_keywords = ['permission', 'unauthorized', 'access denied', 'forbidden', 'authorization', 'role', 'rbac']
+        if any(keyword in output_lower for keyword in permission_keywords):
+            stats['error_type'] = 'permission'
+        elif 'error' in output_lower or 'failed' in output_lower:
+            stats['error_type'] = 'other'
+        
+        # Extract error details (last few error lines)
+        error_lines = [line for line in output.split('\n') if any(kw in line.lower() for kw in ['error', 'failed', 'denied', 'unauthorized'])]
+        if error_lines:
+            stats['error_details'] = error_lines[-5:]  # Last 5 error lines
+        
+        return stats
+    
     def _export_resource_group(
         self,
         subscription_id: str,
         subscription_name: str,
         resource_group: str,
         output_path: Path
-    ) -> bool:
-        """Export a single resource group using aztfexport"""
+    ) -> Dict[str, Any]:
+        """Export a single resource group using aztfexport
+        
+        Returns:
+            Dictionary with export status and resource statistics:
+            {
+                'success': bool,
+                'total_resources': int,
+                'exported_resources': int,
+                'failed_resources': int,
+                'skipped_resources': int,
+                'error_type': str or None,
+                'error_details': list
+            }
+        """
         self.logger.info(f"Exporting resource group: {resource_group}")
+        
+        # Initialize result
+        result = {
+            'success': False,
+            'total_resources': 0,
+            'exported_resources': 0,
+            'failed_resources': 0,
+            'skipped_resources': 0,
+            'error_type': None,
+            'error_details': []
+        }
         
         output_path = output_path.resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -393,14 +473,27 @@ class ExportManager:
                 exit_code = process.wait(timeout=3600)
             
             full_output = '\n'.join(output_lines)
+            
+            # Parse output for resource statistics
+            parsed_stats = self._parse_aztfexport_output(full_output)
+            result.update(parsed_stats)
+            
             self.logger.info("")
             if exit_code == 0:
                 self.logger.info("=" * 60)
                 self.logger.success(f"✓ EXPORT COMPLETED SUCCESSFULLY for {resource_group}")
+                if result['exported_resources'] > 0:
+                    self.logger.info(f"   Resources exported: {result['exported_resources']}")
+                if result['failed_resources'] > 0:
+                    self.logger.warning(f"   Resources failed: {result['failed_resources']}")
+                if result['skipped_resources'] > 0:
+                    self.logger.info(f"   Resources skipped: {result['skipped_resources']}")
                 self.logger.info("=" * 60)
             else:
                 self.logger.info("=" * 60)
                 self.logger.error(f"✗ EXPORT FAILED for {resource_group} (exit code: {exit_code})")
+                if result['error_type']:
+                    self.logger.error(f"   Error type: {result['error_type']}")
                 self.logger.info("=" * 60)
             
             if exit_code == 0:
@@ -414,7 +507,13 @@ class ExportManager:
                     self.logger.info(f"   Created {len(tf_files)} Terraform file(s)")
                     if actual_dir != output_path:
                         self.logger.debug(f"   Files created in: {actual_dir}")
-                    return True
+                    result['success'] = True
+                    # If we couldn't parse resource count, estimate from tf files
+                    if result['exported_resources'] == 0:
+                        # Rough estimate: count .tf files (each may contain multiple resources)
+                        result['exported_resources'] = len(tf_files)
+                        result['total_resources'] = len(tf_files)
+                    return result
                 else:
                     if output_path.exists():
                         all_files = list(output_path.iterdir())
@@ -432,7 +531,8 @@ class ExportManager:
                     else:
                         self.logger.warning(f"⚠ Export completed but output directory does not exist: {output_path}")
                     self.logger.info("   Check if the resource group has exportable resources")
-                    return False
+                    result['success'] = False
+                    return result
             else:
                 self.logger.error(f"✗✗ Error exporting {resource_group} (exit code: {exit_code})")
                 if full_output:
@@ -443,7 +543,8 @@ class ExportManager:
                         if line.strip():
                             self.logger.error(f"     {line}")
                 self.logger.info("   Check the output above for error details")
-                return False
+                result['success'] = False
+                return result
                 
         except subprocess.TimeoutExpired:
             if 'process' in locals():
@@ -452,14 +553,23 @@ class ExportManager:
                 except:
                     pass
             self.logger.error(f"✗✗ Timeout exporting {resource_group} (exceeded 1 hour)")
-            return False
+            result['success'] = False
+            result['error_type'] = 'timeout'
+            result['error_details'] = ['Export timeout: exceeded 1 hour']
+            return result
         except FileNotFoundError:
             self.logger.error("aztfexport not found. Make sure it's installed and in PATH")
             self.logger.info("Install with: go install github.com/Azure/aztfexport@latest")
-            return False
+            result['success'] = False
+            result['error_type'] = 'tool_not_found'
+            result['error_details'] = ['aztfexport not found in PATH']
+            return result
         except Exception as e:
             self.logger.error(f"Error exporting {resource_group}: {str(e)}")
-            return False
+            result['success'] = False
+            result['error_type'] = 'exception'
+            result['error_details'] = [str(e)]
+            return result
     
     def export_subscription(
         self,
@@ -487,7 +597,12 @@ class ExportManager:
             'resource_groups': {},
             'total_rgs': len(resource_groups),
             'successful_rgs': 0,
-            'failed_rgs': 0
+            'failed_rgs': 0,
+            # Resource-level statistics
+            'total_resources': 0,
+            'exported_resources': 0,
+            'failed_resources': 0,
+            'skipped_resources': 0
         }
         
         if not resource_groups:
@@ -500,29 +615,49 @@ class ExportManager:
             else:
                 rg_dir = sub_dir
             
-            success = self._export_resource_group(
+            rg_result = self._export_resource_group(
                 subscription_id,
                 subscription_name,
                 rg,
                 rg_dir
             )
             
-            if success:
+            # Handle both old boolean return (backward compatibility) and new dict return
+            if isinstance(rg_result, dict):
+                success = rg_result.get('success', False)
+                # Aggregate resource statistics
+                results['total_resources'] += rg_result.get('total_resources', 0)
+                results['exported_resources'] += rg_result.get('exported_resources', 0)
+                results['failed_resources'] += rg_result.get('failed_resources', 0)
+                results['skipped_resources'] += rg_result.get('skipped_resources', 0)
+                
                 results['resource_groups'][rg] = {
                     'path': str(rg_dir),
-                    'status': 'success'
+                    'status': 'success' if success else 'failed',
+                    'total_resources': rg_result.get('total_resources', 0),
+                    'exported_resources': rg_result.get('exported_resources', 0),
+                    'failed_resources': rg_result.get('failed_resources', 0),
+                    'skipped_resources': rg_result.get('skipped_resources', 0),
+                    'error_type': rg_result.get('error_type'),
+                    'error_details': rg_result.get('error_details', [])
                 }
+            else:
+                # Backward compatibility: boolean return
+                success = bool(rg_result)
+                results['resource_groups'][rg] = {
+                    'path': str(rg_dir),
+                    'status': 'success' if success else 'failed'
+                }
+            
+            if success:
                 results['successful_rgs'] += 1
             else:
-                results['resource_groups'][rg] = {
-                    'path': str(rg_dir),
-                    'status': 'failed'
-                }
                 results['failed_rgs'] += 1
         
         self.logger.success(f"Export completed for {subscription_name}")
-        self.logger.info(f"Successful: {results['successful_rgs']}/{results['total_rgs']}")
-        self.logger.info(f"Failed: {results['failed_rgs']}/{results['total_rgs']}")
+        self.logger.info(f"Resource Groups - Successful: {results['successful_rgs']}/{results['total_rgs']}, Failed: {results['failed_rgs']}/{results['total_rgs']}")
+        if results['total_resources'] > 0:
+            self.logger.info(f"Resources - Total: {results['total_resources']}, Exported: {results['exported_resources']}, Failed: {results['failed_resources']}, Skipped: {results['skipped_resources']}")
         
         return results
     

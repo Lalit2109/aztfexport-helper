@@ -98,13 +98,39 @@ def main():
         exclude_subscriptions = exclude_subscriptions_raw if isinstance(exclude_subscriptions_raw, list) else []
     create_rg_folders = export_manager.config.get('output', {}).get('create_rg_folders', True)
     
+    # Get subscription filter from environment variable (comma-separated list)
+    subscription_filter = os.getenv('SUBSCRIPTION_IDS', '').strip()
+    selected_subscription_ids = []
+    if subscription_filter:
+        # Parse comma-separated list and normalize (strip whitespace)
+        selected_subscription_ids = [s.strip() for s in subscription_filter.split(',') if s.strip()]
+        logger.info(f"Subscription filter provided: {', '.join(selected_subscription_ids)}")
+    else:
+        logger.info("No subscription filter provided - processing all subscriptions")
+    
     # Separate subscriptions into excluded and to-be-processed
     excluded_subs = []  # List of (sub_name, sub_id, exclude_pattern) tuples
     subscriptions_to_process = []
+    filtered_out_subs = []  # List of (sub_name, sub_id) tuples that were filtered out
     
     for sub in subscriptions:
         subscription_id = sub.get('id')
         subscription_name = sub.get('name', subscription_id)
+        
+        # Check if subscription is in the filter list (if filter is provided)
+        if selected_subscription_ids:
+            # Match by ID or name (case-insensitive)
+            subscription_id_lower = subscription_id.lower()
+            subscription_name_lower = subscription_name.lower()
+            matched = False
+            for filter_id in selected_subscription_ids:
+                filter_id_lower = filter_id.lower()
+                if filter_id_lower == subscription_id_lower or filter_id_lower == subscription_name_lower:
+                    matched = True
+                    break
+            if not matched:
+                filtered_out_subs.append((subscription_name, subscription_id))
+                continue
         
         # Check exclusion by ID or name
         matching_pattern = None
@@ -124,6 +150,11 @@ def main():
     logger.info("Subscription Processing Summary")
     logger.info("=" * 70)
     
+    if filtered_out_subs:
+        logger.info(f"Filtered out subscriptions ({len(filtered_out_subs)}):")
+        for sub_name, sub_id in filtered_out_subs:
+            logger.info(f"  ⊘ {sub_name} (ID: {sub_id}) - not in selected list")
+    
     if excluded_subs:
         logger.info(f"Excluded subscriptions ({len(excluded_subs)}):")
         for sub_name, sub_id, pattern in excluded_subs:
@@ -137,9 +168,21 @@ def main():
             logger.info(f"  ✓ {sub_name} (ID: {sub_id})")
     
     total_subs = len(subscriptions)
-    logger.success(f"Found {total_subs} total subscription(s): {len(subscriptions_to_process)} to process, {len(excluded_subs)} excluded")
+    filtered_count = len(filtered_out_subs)
+    excluded_count = len(excluded_subs)
+    process_count = len(subscriptions_to_process)
+    logger.success(f"Found {total_subs} total subscription(s): {process_count} to process, {filtered_count} filtered out, {excluded_count} excluded")
     logger.info("=" * 70)
     logger.info("")
+    
+    if not subscriptions_to_process:
+        if filtered_out_subs:
+            logger.warning("No subscriptions to process after filtering. Check your SUBSCRIPTION_IDS parameter.")
+        elif excluded_subs:
+            logger.warning("No subscriptions to process - all are excluded. Check your exclude_subscriptions configuration.")
+        else:
+            logger.warning("No subscriptions to process.")
+        sys.exit(0)
     
     try:
         export_manager._install_aztfexport()
@@ -229,7 +272,11 @@ def main():
                     successful_resource_groups=subscription_result.get('successful_rgs', 0),
                     failed_resource_groups=subscription_result.get('failed_rgs', 0),
                     git_push_status=git_push_status,
-                    error_message=error_message
+                    error_message=error_message,
+                    total_resources=subscription_result.get('total_resources', 0),
+                    exported_resources=subscription_result.get('exported_resources', 0),
+                    failed_resources=subscription_result.get('failed_resources', 0),
+                    skipped_resources=subscription_result.get('skipped_resources', 0)
                 )
             except Exception as la_error:
                 logger.warning(f"Failed to send data to Log Analytics for {subscription_name}: {str(la_error)}")
@@ -258,7 +305,11 @@ def main():
                     successful_resource_groups=0,
                     failed_resource_groups=0,
                     git_push_status="skipped",
-                    error_message=error_message
+                    error_message=error_message,
+                    total_resources=0,
+                    exported_resources=0,
+                    failed_resources=0,
+                    skipped_resources=0
                 )
             except Exception as la_error:
                 logger.warning(f"Failed to send failure status to Log Analytics for {subscription_name}: {str(la_error)}")
@@ -279,11 +330,24 @@ def main():
     total_rgs = sum(r.get('total_rgs', 0) for r in results.values())
     successful_rgs = sum(r.get('successful_rgs', 0) for r in results.values())
     
+    # Aggregate resource-level statistics
+    total_resources = sum(r.get('total_resources', 0) for r in results.values())
+    exported_resources = sum(r.get('exported_resources', 0) for r in results.values())
+    failed_resources = sum(r.get('failed_resources', 0) for r in results.values())
+    skipped_resources = sum(r.get('skipped_resources', 0) for r in results.values())
+    
     logger.info(f"Subscriptions processed: {total_subs}")
     logger.info(f"Subscriptions with successful exports: {successful_subs}")
     logger.info(f"Total resource groups: {total_rgs}")
     logger.info(f"Successfully exported: {successful_rgs}")
     logger.info(f"Failed: {total_rgs - successful_rgs}")
+    if total_resources > 0:
+        logger.info("")
+        logger.info("Resource-level statistics:")
+        logger.info(f"  Total resources: {total_resources}")
+        logger.info(f"  Successfully exported: {exported_resources}")
+        logger.info(f"  Failed: {failed_resources}")
+        logger.info(f"  Skipped: {skipped_resources}")
     
     results_file = Path(export_manager.base_dir) / 'export_results.json'
     with open(results_file, 'w') as f:

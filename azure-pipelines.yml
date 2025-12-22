@@ -7,6 +7,15 @@ trigger:
 
 pr: none
 
+# Pipeline parameters
+# subscriptionIds: Comma-separated list of subscription IDs to export (empty = all subscriptions)
+# Example: "sub-id-1,sub-id-2" or leave empty for all
+parameters:
+  - name: subscriptionIds
+    displayName: 'Subscription IDs (comma-separated, empty for all)'
+    type: string
+    default: ''
+
 # Schedule: Run weekly on Friday morning at 8:00 AM UTC
 schedules:
 - cron: "0 8 * * 5"  # Every Friday at 8:00 AM UTC
@@ -36,10 +45,73 @@ stages:
   jobs:
   - job: ExportJob
     displayName: 'Export Azure Resources'
+    # Matrix strategy: one job per subscription/service connection
+    # IMPORTANT: Update this matrix with your actual subscription IDs and service connection names
+    # Each subscription should have its own entry with:
+    #   - subscriptionId: The Azure subscription ID
+    #   - serviceConnection: The Azure DevOps service connection name for that subscription
+    # If a subscription doesn't have a dedicated service connection, use the default one from variable group
+    strategy:
+      matrix:
+        # Default entry - uses default service connection
+        # Remove this and add your actual subscriptions below
+        default:
+          subscriptionId: ''  # Will be filtered by Python script based on parameter
+          serviceConnection: '$(azureServiceConnection)'
+        
+        # Example: Add your subscriptions here (uncomment and update)
+        # Subscription 1 example:
+        # subId1:
+        #   subscriptionId: '12345678-1234-1234-1234-123456789012'
+        #   serviceConnection: 'sc-subscription-1'
+        # 
+        # Subscription 2 example:
+        # subId2:
+        #   subscriptionId: '87654321-4321-4321-4321-210987654321'
+        #   serviceConnection: 'sc-subscription-2'
+    variables:
+      subscriptionId: $[ variables['subscriptionId'] ]
+      serviceConnection: $[ coalesce(variables['serviceConnection'], variables['azureServiceConnection']) ]
     steps:
+    # Step 0: Check if this subscription should be processed
+    - script: |
+        SHOULD_RUN="true"
+        THIS_SUB="$(subscriptionId)"
+        
+        # If subscriptionId is empty (default matrix entry), always run (Python will filter)
+        if [ -z "$THIS_SUB" ]; then
+          echo "Default matrix entry - will process subscriptions based on parameter"
+          echo "##vso[task.setvariable variable=ShouldRunJob]true"
+          exit 0
+        fi
+        
+        # If parameter is set, check if this subscription is in the list
+        if [ -n "${{ parameters.subscriptionIds }}" ]; then
+          SUB_IDS="${{ parameters.subscriptionIds }}"
+          # Check if subscription ID is in the comma-separated list
+          if echo "$SUB_IDS" | grep -qE "(^|,)$THIS_SUB(,|$)"; then
+            echo "Subscription $THIS_SUB is in the selected list"
+          else
+            echo "Subscription $THIS_SUB is not in the selected list: $SUB_IDS"
+            echo "Skipping this job."
+            SHOULD_RUN="false"
+          fi
+        fi
+        # If parameter is empty, process all (scheduled run)
+        
+        echo "##vso[task.setvariable variable=ShouldRunJob]$SHOULD_RUN"
+        if [ "$SHOULD_RUN" = "false" ]; then
+          echo "Job will be skipped - subscription not selected"
+        else
+          echo "Processing subscription: $THIS_SUB"
+        fi
+      displayName: 'Check Subscription Selection'
+      continueOnError: false
+    
     # Step 1: Install prerequisites
     - task: GoTool@0
       displayName: 'Install Go (for aztfexport)'
+      condition: eq(variables['ShouldRunJob'], 'true')
       inputs:
         version: '1.21.x'
 
@@ -50,9 +122,11 @@ stages:
         aztfexport --version
         echo "##vso[task.prependpath]$(go env GOPATH)/bin"
       displayName: 'Install aztfexport'
+      condition: eq(variables['ShouldRunJob'], 'true')
 
     - task: UsePythonVersion@0
       displayName: 'Setup Python'
+      condition: eq(variables['ShouldRunJob'], 'true')
       inputs:
         versionSpec: '3.10'
         addToPath: true
@@ -61,9 +135,11 @@ stages:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
       displayName: 'Install Python dependencies'
+      condition: eq(variables['ShouldRunJob'], 'true')
 
     - task: TerraformInstaller@0
       displayName: 'Install Terraform'
+      condition: eq(variables['ShouldRunJob'], 'true')
       inputs:
         terraformVersion: 'latest'
 
@@ -77,16 +153,19 @@ stages:
         echo "Output directory is now clean:"
         ls -la "$(outputDir)" || echo "Directory is empty"
       displayName: 'Clean export/output directory'
+      condition: eq(variables['ShouldRunJob'], 'true')
 
     # Step 3: Configure Azure authentication and run export
     - task: AzureCLI@2
       displayName: 'Azure Login and Export'
+      condition: eq(variables['ShouldRunJob'], 'true')
       inputs:
-        azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
+        azureSubscription: '$(serviceConnection)'  # Service connection for this subscription (from matrix)
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
         inlineScript: |
           echo "Authenticating with Azure..."
+          echo "Using service connection: $(serviceConnection)"
           az account show
           echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
           echo "Logged in to subscription: $(az account show --query name -o tsv)"
@@ -108,12 +187,14 @@ stages:
           export CONFIG_PATH=$(configPath)
           export AZURE_DEVOPS_PAT=$(System.AccessToken)
           export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
+          # Pass subscription ID to Python script for filtering
+          export SUBSCRIPTION_IDS="$(subscriptionId)"
           # Log Analytics configuration (set in variable group or pipeline variables)
           export LOG_ANALYTICS_WORKSPACE_ID=$(LOG_ANALYTICS_WORKSPACE_ID)
           export LOG_ANALYTICS_SHARED_KEY=$(LOG_ANALYTICS_SHARED_KEY)
           
           # Run export
-          echo "Starting Terraform export..."
+          echo "Starting Terraform export for subscription: $(subscriptionId)"
           python src/main.py
       env:
         SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
@@ -135,10 +216,12 @@ stages:
         echo "Output directory contents:"
         ls -la "$(outputDir)" || echo "Directory is empty"
       displayName: 'Prepare Output Directory'
+      condition: eq(variables['ShouldRunJob'], 'true')
       continueOnError: true
 
     - task: PublishBuildArtifacts@1
       displayName: 'Publish Export Results'
+      condition: and(eq(variables['ShouldRunJob'], 'true'), always())
       inputs:
         pathToPublish: '$(outputDir)'
         artifactName: 'terraform-exports'
@@ -156,6 +239,7 @@ stages:
           echo "Export results file not found"
         fi
       displayName: 'Generate Summary Report'
+      condition: eq(variables['ShouldRunJob'], 'true')
       continueOnError: true
 
 - stage: SendEmailReport

@@ -28,6 +28,15 @@ logging:
 
 # Subscriptions are auto-discovered from Azure CLI (no manual list needed)
 
+# Map subscription IDs to Azure DevOps service connection names
+# Each service connection should have an SPN scoped to that subscription with Contributor role
+# If a subscription is not listed here, the default service connection will be used
+# (specified in pipeline variable group as azureServiceConnection)
+subscription_service_connections:
+  # Example:
+  # "subscription-id-1": "sc-subscription-1"  # Service connection name in Azure DevOps
+  # "subscription-id-2": "sc-subscription-2"
+
 # aztfexport configuration
 aztfexport:
   # Resource types to export (empty = all)

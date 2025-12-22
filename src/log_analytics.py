@@ -114,7 +114,11 @@ class LogAnalyticsSender:
         successful_resource_groups: int,
         failed_resource_groups: int,
         git_push_status: str = "skipped",
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        total_resources: int = 0,
+        exported_resources: int = 0,
+        failed_resources: int = 0,
+        skipped_resources: int = 0
     ) -> bool:
         """Send subscription backup status to Log Analytics
         
@@ -129,6 +133,10 @@ class LogAnalyticsSender:
             failed_resource_groups: Number of failed resource groups
             git_push_status: Git push status (success/failed/skipped)
             error_message: Error message if any
+            total_resources: Total number of resources (optional)
+            exported_resources: Number of successfully exported resources (optional)
+            failed_resources: Number of failed resources (optional)
+            skipped_resources: Number of skipped resources (optional)
         
         Returns:
             True if successful, False otherwise
@@ -148,6 +156,13 @@ class LogAnalyticsSender:
             "FailedResourceGroups": failed_resource_groups,
             "GitPushStatus": git_push_status
         }
+        
+        # Add resource-level statistics if provided
+        if total_resources > 0 or exported_resources > 0 or failed_resources > 0 or skipped_resources > 0:
+            record["TotalResources"] = total_resources
+            record["ExportedResources"] = exported_resources
+            record["FailedResources"] = failed_resources
+            record["SkippedResources"] = skipped_resources
         
         if error_message:
             record["ErrorMessage"] = error_message
