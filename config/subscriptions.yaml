@@ -1,14 +1,9 @@
 # Azure Subscriptions Configuration
 
-# Exclude subscriptions from export (all others are exported)
-# Can exclude by subscription ID or subscription name
+# Exclude subscriptions from export (can exclude by subscription ID or name)
 exclude_subscriptions:
   prod: []
-    # - "subscription-id-prod-1"  # Exclude by ID
-    # - "Production Subscription Name"  # Exclude by name
   non-prod: []
-    # - "subscription-id-non-prod-1"  # Exclude by ID
-    # - "Development Subscription Name"  # Exclude by name
 
 # Global resource group exclusions (wildcards supported: *, ?)
 global_excludes:
@@ -22,37 +17,20 @@ global_excludes:
     - "azure-arc"
     - "DefaultResourceGroup-*"
 
-# Logging (DEBUG, INFO, ERROR) - can override via LOG_LEVEL env var
+# Logging level (DEBUG, INFO, ERROR) - can override via LOG_LEVEL env var
 logging:
   level: INFO
 
-# Subscriptions are auto-discovered from Azure CLI (no manual list needed)
-#
-# NOTE: Subscription-to-service-connection mapping is defined in azure-pipelines.yml matrix
-# (not in this config file). Each subscription should have its own matrix entry with:
-#   - subscriptionId: The Azure subscription ID
-#   - subscriptionName: The subscription display name (optional but recommended)
-#   - serviceConnection: The Azure DevOps service connection name for that subscription
-# See azure-pipelines.yml for the matrix configuration.
+# NOTE: Subscription-to-service-connection mapping is in azure-pipelines.yml matrix
+# See azure-pipelines.yml for subscription/SPN configuration
 
 # aztfexport configuration
 aztfexport:
-  # Resource types to export (empty = all)
   resource_types: []
-  
-  # Resource groups to exclude (in addition to global_excludes)
   exclude_resource_groups: []
-  
-  # Resources to exclude by full ID
   exclude_resources: []
-  
-  # Resource types to exclude (uses Resource Graph query mode)
   exclude_resource_types: []
-  
-  # Custom Resource Graph query (overrides exclude_resource_types if set)
   query: null
-  
-  # Additional aztfexport flags
   additional_flags: []
 
 # Azure DevOps configuration
@@ -62,18 +40,14 @@ azure_devops:
 
 # Git configuration
 git:
-  # Push to repos (can override via PUSH_TO_REPOS env var)
   push_to_repos: false
   branch: "main"
-  # Number of recent backup branches (runs) to keep (default: 10)
   backup_retention_count: 10
 
 # Output configuration
 output:
   base_dir: "./exports"
-  # Create resource group subfolders (true) or flat subscription folder (false)
   create_rg_folders: true
-  # Clean up export directory after successful git push (saves disk space)
   cleanup_after_push: true
   
 
