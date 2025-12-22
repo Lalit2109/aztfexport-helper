@@ -8,11 +8,12 @@ trigger:
 pr: none
 
 # Pipeline parameters
-# subscriptionIds: Comma-separated list of subscription IDs to export (empty = all subscriptions)
-# Example: "sub-id-1,sub-id-2" or leave empty for all
+# subscriptionIds: Comma-separated list of subscription IDs or names to export (empty = all subscriptions)
+# Supports both subscription IDs and subscription names (case-insensitive matching)
+# Example: "sub-id-1,sub-id-2" or "Production Subscription,Development Subscription" or leave empty for all
 parameters:
   - name: subscriptionIds
-    displayName: 'Subscription IDs (comma-separated, empty for all)'
+    displayName: 'Subscription IDs or Names (comma-separated, empty for all)'
     type: string
     default: ''
 
@@ -46,9 +47,10 @@ stages:
   - job: ExportJob
     displayName: 'Export Azure Resources'
     # Matrix strategy: one job per subscription/service connection
-    # IMPORTANT: Update this matrix with your actual subscription IDs and service connection names
+    # IMPORTANT: Update this matrix with your actual subscription IDs, names, and service connection names
     # Each subscription should have its own entry with:
-    #   - subscriptionId: The Azure subscription ID
+    #   - subscriptionId: The Azure subscription ID (required)
+    #   - subscriptionName: The Azure subscription display name (optional, but recommended for name-based filtering/exclusion)
     #   - serviceConnection: The Azure DevOps service connection name for that subscription
     # If a subscription doesn't have a dedicated service connection, use the default one from variable group
     strategy:
@@ -57,42 +59,56 @@ stages:
         # Remove this and add your actual subscriptions below
         default:
           subscriptionId: ''  # Will be filtered by Python script based on parameter
+          subscriptionName: ''  # Optional: subscription display name
           serviceConnection: '$(azureServiceConnection)'
         
         # Example: Add your subscriptions here (uncomment and update)
         # Subscription 1 example:
         # subId1:
         #   subscriptionId: '12345678-1234-1234-1234-123456789012'
+        #   subscriptionName: 'Production Subscription'  # Optional but recommended
         #   serviceConnection: 'sc-subscription-1'
         # 
         # Subscription 2 example:
         # subId2:
         #   subscriptionId: '87654321-4321-4321-4321-210987654321'
+        #   subscriptionName: 'Development Subscription'  # Optional but recommended
         #   serviceConnection: 'sc-subscription-2'
     variables:
       subscriptionId: $[ variables['subscriptionId'] ]
+      subscriptionName: $[ coalesce(variables['subscriptionName'], '') ]
       serviceConnection: $[ coalesce(variables['serviceConnection'], variables['azureServiceConnection']) ]
     steps:
     # Step 0: Check if this subscription should be processed
     - script: |
         SHOULD_RUN="true"
-        THIS_SUB="$(subscriptionId)"
+        THIS_SUB_ID="$(subscriptionId)"
+        THIS_SUB_NAME="$(subscriptionName)"
         
         # If subscriptionId is empty (default matrix entry), always run (Python will filter)
-        if [ -z "$THIS_SUB" ]; then
+        if [ -z "$THIS_SUB_ID" ]; then
           echo "Default matrix entry - will process subscriptions based on parameter"
           echo "##vso[task.setvariable variable=ShouldRunJob]true"
           exit 0
         fi
         
-        # If parameter is set, check if this subscription is in the list
+        # If parameter is set, check if this subscription (by ID or name) is in the list
         if [ -n "${{ parameters.subscriptionIds }}" ]; then
           SUB_IDS="${{ parameters.subscriptionIds }}"
+          MATCHED="false"
+          
           # Check if subscription ID is in the comma-separated list
-          if echo "$SUB_IDS" | grep -qE "(^|,)$THIS_SUB(,|$)"; then
-            echo "Subscription $THIS_SUB is in the selected list"
-          else
-            echo "Subscription $THIS_SUB is not in the selected list: $SUB_IDS"
+          if echo "$SUB_IDS" | grep -qE "(^|,)$THIS_SUB_ID(,|$)"; then
+            echo "Subscription ID $THIS_SUB_ID is in the selected list"
+            MATCHED="true"
+          # Check if subscription name is in the list (if name is provided)
+          elif [ -n "$THIS_SUB_NAME" ] && echo "$SUB_IDS" | grep -qiE "(^|,)$THIS_SUB_NAME(,|$)"; then
+            echo "Subscription name '$THIS_SUB_NAME' is in the selected list"
+            MATCHED="true"
+          fi
+          
+          if [ "$MATCHED" = "false" ]; then
+            echo "Subscription (ID: $THIS_SUB_ID, Name: $THIS_SUB_NAME) is not in the selected list: $SUB_IDS"
             echo "Skipping this job."
             SHOULD_RUN="false"
           fi
@@ -103,7 +119,11 @@ stages:
         if [ "$SHOULD_RUN" = "false" ]; then
           echo "Job will be skipped - subscription not selected"
         else
-          echo "Processing subscription: $THIS_SUB"
+          if [ -n "$THIS_SUB_NAME" ]; then
+            echo "Processing subscription: $THIS_SUB_NAME (ID: $THIS_SUB_ID)"
+          else
+            echo "Processing subscription: $THIS_SUB_ID"
+          fi
         fi
       displayName: 'Check Subscription Selection'
       continueOnError: false
