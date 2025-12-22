@@ -16,10 +16,11 @@ The pipeline:
    - Service connection for Azure authentication
    - Repositories created (or they will be created automatically)
 
-2. **Azure Service Connection**:
-   - Must have access to all subscriptions you want to export
-   - Should have "Reader" role at minimum (for listing resources)
-   - Recommended: "Contributor" role for full access
+2. **Azure Service Connections**:
+   - **Default Service Connection**: Must have access to all subscriptions you want to export
+   - **Per-Subscription Service Connections** (optional): Create dedicated service connections for specific subscriptions
+   - Each service connection should have "Contributor" role on its target subscription(s)
+   - Service connections use Service Principals (SPNs) - no credentials in code
 
 3. **Repository Permissions**:
    - Pipeline service account needs "Contribute" permissions to target repositories
@@ -43,15 +44,27 @@ The pipeline:
 - `outputDir`: Output directory (default: `$(Pipeline.Workspace)/exports`)
 - `gitBranch`: Default branch name (default: `main`)
 
-### Step 2: Configure Service Connection
+### Step 2: Configure Service Connections
+
+#### Default Service Connection (Required)
 
 1. Go to **Project Settings** → **Service connections**
 2. Create a new **Azure Resource Manager** service connection
 3. Choose authentication method:
    - **Managed Identity** (recommended for managed pools)
    - **Service Principal** (for self-hosted agents)
-4. Grant access to all subscriptions you want to export
-5. Note the service connection name and add it to the variable group
+4. Grant access to all subscriptions you want to export (or at minimum, subscriptions without dedicated SPNs)
+5. Note the service connection name and add it to the variable group as `azureServiceConnection`
+
+#### Per-Subscription Service Connections (Optional)
+
+For subscriptions that need dedicated SPNs (for security/isolation):
+
+1. Create a separate service connection for each subscription
+2. Each service connection should have access only to its specific subscription
+3. Name them consistently (e.g., `sc-subscription-1`, `sc-subscription-2`)
+4. Map them in `config/subscriptions.yaml` (see Step 3)
+5. Add corresponding matrix entries in `azure-pipelines.yml` (see Step 5)
 
 ### Step 3: Update Configuration File
 
@@ -68,19 +81,20 @@ git:
   push_to_repos: true                # Enable git push
   branch: "main"                     # Default branch
 
-# Subscriptions
-subscriptions:
-  - id: "subscription-id-1"
-    name: "Production Subscription 1"
-    environment: "prod"
-    export_enabled: true
-    repo_name: "terraform-prod-sub-1"  # Repository name
-    # OR use full URL:
-    # repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"
-    branch: "main"                     # Optional: override default branch
+# Subscription-to-service-connection mapping
+# Only add entries for subscriptions that have dedicated service connections
+# Subscriptions NOT listed here will use the default service connection
+subscription_service_connections:
+  "subscription-id-1": "sc-subscription-1"  # Subscription ID -> Service connection name
+  "subscription-id-2": "sc-subscription-2"
+
+# Exclude subscriptions from export (optional)
+exclude_subscriptions:
+  prod: []
+  non-prod: []
 ```
 
-### Step 4: Create Repositories (Optional)
+### Step 6: Create Repositories (Optional)
 
 Repositories can be created automatically, or you can create them manually:
 
@@ -88,6 +102,33 @@ Repositories can be created automatically, or you can create them manually:
 2. Create a new repository for each subscription
 3. Repository name should match `repo_name` in config
 4. Initialize with a README (optional)
+
+### Step 4: Configure Pipeline Matrix (Optional)
+
+If you have subscriptions with dedicated service connections, add them to the matrix in `azure-pipelines.yml`:
+
+```yaml
+strategy:
+  matrix:
+    # Default entry - processes all subscriptions without dedicated SPNs
+    default:
+      subscriptionId: ''
+      subscriptionName: ''
+      serviceConnection: '$(azureServiceConnection)'
+    
+    # Add entries ONLY for subscriptions with dedicated service connections
+    subId1:
+      subscriptionId: 'subscription-id-1'
+      subscriptionName: 'Production Subscription'
+      serviceConnection: 'sc-subscription-1'
+    
+    subId2:
+      subscriptionId: 'subscription-id-2'
+      subscriptionName: 'Development Subscription'
+      serviceConnection: 'sc-subscription-2'
+```
+
+**Note**: Only add matrix entries for subscriptions that have dedicated service connections. The `default` entry handles all other subscriptions.
 
 ### Step 5: Import Pipeline
 
@@ -100,15 +141,35 @@ Repositories can be created automatically, or you can create them manually:
 
 ## How It Works
 
+### Pipeline Execution Modes
+
+#### Scheduled Run (Default)
+- **Parameter**: `subscriptionIds` is empty
+- **Behavior**: All matrix jobs run → processes all subscriptions
+- **SPN Usage**: 
+  - Subscriptions with dedicated SPNs use their mapped service connections
+  - Other subscriptions use the default service connection
+
+#### Manual Run (Selected Subscriptions)
+- **Parameter**: `subscriptionIds` contains comma-separated subscription IDs or names
+- **Behavior**: Only matrix jobs matching the selected subscriptions run
+- **Example**: `subscriptionIds: "sub-id-1,sub-id-2"` or `"Production Subscription,Development Subscription"`
+
 ### Export Process
 
 1. **Installation**: Installs Go, Python, and `aztfexport`
-2. **Authentication**: Uses service connection to authenticate with Azure
-3. **Export**: For each enabled subscription:
+2. **Authentication**: 
+   - Each matrix job uses its configured service connection
+   - Default job uses the default service connection
+3. **Subscription Discovery**: Python discovers subscriptions from Azure CLI
+4. **Filtering**: 
+   - If parameter is set, only selected subscriptions are processed
+   - Exclusions from config file are applied
+5. **Export**: For each subscription:
    - Lists all resource groups (excluding global excludes)
    - Exports each resource group using `aztfexport`
    - Creates folder structure: `exports/{subscription-name}/{resource-group-name}/`
-4. **Git Push** (if enabled):
+6. **Git Push** (if enabled):
    - Initializes git repository in subscription folder
    - Creates `.gitignore` and `README.md`
    - Commits all Terraform files

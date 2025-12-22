@@ -21,8 +21,14 @@ global_excludes:
 logging:
   level: INFO
 
-# NOTE: Subscription-to-service-connection mapping is in azure-pipelines.yml matrix
-# See azure-pipelines.yml for subscription/SPN configuration
+# Subscription-to-service-connection mapping
+# Map subscription IDs to Azure DevOps service connection names
+# Subscriptions listed here should have corresponding matrix entries in azure-pipelines.yml
+# Subscriptions NOT listed here will use the default service connection (from variable group)
+subscription_service_connections:
+  # Example:
+  # "subscription-id-1": "sc-subscription-1"
+  # "subscription-id-2": "sc-subscription-2"
 
 # aztfexport configuration
 aztfexport:

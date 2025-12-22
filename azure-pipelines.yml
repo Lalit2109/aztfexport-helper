@@ -47,29 +47,39 @@ stages:
   - job: ExportJob
     displayName: 'Export Azure Resources'
     # Matrix strategy: one job per subscription/service connection
-    # IMPORTANT: Update this matrix with your actual subscription IDs, names, and service connection names
-    # Each subscription should have its own entry with:
+    # 
+    # WORKFLOW:
+    # - Scheduled run (parameter empty): All matrix jobs run → processes all subscriptions
+    # - Manual run (parameter set): Only matching subscriptions run
+    # - SPN mapping: Subscriptions with dedicated SPNs use them, others use default SPN
+    #
+    # CONFIGURATION:
+    # 1. Default entry: Processes all subscriptions without dedicated SPN mappings (uses default service connection)
+    # 2. Add matrix entries ONLY for subscriptions that have dedicated service connections
+    # 3. Map subscription IDs to service connections in config/subscriptions.yaml (subscription_service_connections)
+    #
+    # Each matrix entry should have:
     #   - subscriptionId: The Azure subscription ID (required)
-    #   - subscriptionName: The Azure subscription display name (optional, but recommended for name-based filtering/exclusion)
+    #   - subscriptionName: The subscription display name (optional but recommended for name-based filtering)
     #   - serviceConnection: The Azure DevOps service connection name for that subscription
-    # If a subscription doesn't have a dedicated service connection, use the default one from variable group
     strategy:
       matrix:
-        # Default entry - uses default service connection
-        # Remove this and add your actual subscriptions below
+        # Default entry - processes all subscriptions without dedicated SPN mappings
+        # This job uses the default service connection from variable group
+        # Python script will filter subscriptions based on parameter and exclusion config
         default:
-          subscriptionId: ''  # Will be filtered by Python script based on parameter
+          subscriptionId: ''  # Empty = process all subscriptions (filtered by Python)
           subscriptionName: ''  # Optional: subscription display name
           serviceConnection: '$(azureServiceConnection)'
         
-        # Example: Add your subscriptions here (uncomment and update)
-        # Subscription 1 example:
+        # Add matrix entries ONLY for subscriptions with dedicated service connections
+        # These subscriptions will use their own SPN instead of the default one
+        # Example:
         # subId1:
         #   subscriptionId: '12345678-1234-1234-1234-123456789012'
         #   subscriptionName: 'Production Subscription'  # Optional but recommended
         #   serviceConnection: 'sc-subscription-1'
         # 
-        # Subscription 2 example:
         # subId2:
         #   subscriptionId: '87654321-4321-4321-4321-210987654321'
         #   subscriptionName: 'Development Subscription'  # Optional but recommended
