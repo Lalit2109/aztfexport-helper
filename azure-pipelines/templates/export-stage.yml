@@ -1,35 +1,10 @@
-# Azure DevOps Pipeline for Terraform Export
-# Exports Azure resources using aztfexport and pushes to git repositories
-# Uses matrix strategy for parallel execution by subscription
-
-trigger: none
-
-pr: none
-
-# This pipeline is for manual runs with parameter selection
-# For scheduled runs, use:
-# - terraform-export-schedule1.yml (Monday 8 AM UTC)
-# - terraform-export-schedule2.yml (Thursday 8 AM UTC)
+# Template for export stage
+# Can be reused by multiple pipeline files
 
 parameters:
-  - name: schedule
-    displayName: 'Schedule to run'
+  - name: scheduleName
     type: string
-    default: schedule1
-    values:
-      - schedule1
-      - schedule2
-
-variables:
-  - group: 'TerraformExport'
-  - name: configPath
-    value: 'config/subscriptions.yaml'
-  - name: outputDir
-    value: '$(Pipeline.Workspace)/exports'
-  - name: gitBranch
-    value: 'main'
-  - name: pushToRepos
-    value: 'true'
+    default: 'schedule1'
 
 stages:
   - stage: Export
@@ -41,7 +16,7 @@ stages:
         displayName: 'Export Azure Resources'
         strategy:
           matrix:
-            ${{ if eq(parameters.schedule, 'schedule1') }}:
+            ${{ if eq(parameters.scheduleName, 'schedule1') }}:
               # Schedule 1 subscriptions
               # To update: Run discovery script and copy the matrix output here
               # python azure-pipelines/scripts/discover-subscriptions.py schedule1
@@ -53,7 +28,7 @@ stages:
               # sub-456:
               #   subscription_id: 'sub-456'
               #   subscription_name: 'Subscription Name 2'
-            ${{ if eq(parameters.schedule, 'schedule2') }}:
+            ${{ if eq(parameters.scheduleName, 'schedule2') }}:
               # Schedule 2 subscriptions
               # To update: Run discovery script and copy the matrix output here
               # python azure-pipelines/scripts/discover-subscriptions.py schedule2
@@ -196,3 +171,4 @@ stages:
                 -LookbackHours 24
               azurePowerShellVersion: 'LatestVersion'
             continueOnError: true
+

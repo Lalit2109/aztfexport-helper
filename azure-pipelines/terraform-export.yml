@@ -6,27 +6,11 @@ trigger: none
 
 pr: none
 
-# Two schedules for different subscription sets
-schedules:
-  - cron: "0 8 * * 1"  # Every Monday at 8:00 AM UTC
-    displayName: Schedule 1 - Terraform Export
-    branches:
-      include:
-      - main
-      - master
-    always: true
-    parameters:
-      schedule: schedule1
-
-  - cron: "0 8 * * 4"  # Every Thursday at 8:00 AM UTC
-    displayName: Schedule 2 - Terraform Export
-    branches:
-      include:
-      - main
-      - master
-    always: true
-    parameters:
-      schedule: schedule2
+# Note: Schedules cannot pass parameters in Azure Pipelines
+# Use separate pipeline files for scheduled runs:
+# - terraform-export-schedule1.yml (Monday 8 AM UTC)
+# - terraform-export-schedule2.yml (Thursday 8 AM UTC)
+# This file is for manual runs with parameter selection
 
 parameters:
   - name: schedule

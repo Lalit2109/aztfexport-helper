@@ -1,24 +1,19 @@
-# Azure DevOps Pipeline for Terraform Export
+# Azure DevOps Pipeline for Terraform Export - Schedule 1
+# This pipeline is triggered by schedule1 (Monday 8 AM UTC)
 # Exports Azure resources using aztfexport and pushes to git repositories
-# Uses matrix strategy for parallel execution by subscription
 
 trigger: none
 
 pr: none
 
-# This pipeline is for manual runs with parameter selection
-# For scheduled runs, use:
-# - terraform-export-schedule1.yml (Monday 8 AM UTC)
-# - terraform-export-schedule2.yml (Thursday 8 AM UTC)
-
-parameters:
-  - name: schedule
-    displayName: 'Schedule to run'
-    type: string
-    default: schedule1
-    values:
-      - schedule1
-      - schedule2
+schedules:
+  - cron: "0 8 * * 1"  # Every Monday at 8:00 AM UTC
+    displayName: Schedule 1 - Terraform Export
+    branches:
+      include:
+      - main
+      - master
+    always: true
 
 variables:
   - group: 'TerraformExport'
@@ -41,27 +36,17 @@ stages:
         displayName: 'Export Azure Resources'
         strategy:
           matrix:
-            ${{ if eq(parameters.schedule, 'schedule1') }}:
-              # Schedule 1 subscriptions
-              # To update: Run discovery script and copy the matrix output here
-              # python azure-pipelines/scripts/discover-subscriptions.py schedule1
-              # Then replace the empty matrix below with the output
-              # Example format:
-              # sub-123:
-              #   subscription_id: 'sub-123'
-              #   subscription_name: 'Subscription Name 1'
-              # sub-456:
-              #   subscription_id: 'sub-456'
-              #   subscription_name: 'Subscription Name 2'
-            ${{ if eq(parameters.schedule, 'schedule2') }}:
-              # Schedule 2 subscriptions
-              # To update: Run discovery script and copy the matrix output here
-              # python azure-pipelines/scripts/discover-subscriptions.py schedule2
-              # Then replace the empty matrix below with the output
-              # Example format:
-              # sub-789:
-              #   subscription_id: 'sub-789'
-              #   subscription_name: 'Subscription Name 3'
+            # Schedule 1 subscriptions
+            # To update: Run discovery script and copy the matrix output here
+            # python azure-pipelines/scripts/discover-subscriptions.py schedule1
+            # Then replace the empty matrix below with the output
+            # Example format:
+            # sub-123:
+            #   subscription_id: 'sub-123'
+            #   subscription_name: 'Subscription Name 1'
+            # sub-456:
+            #   subscription_id: 'sub-456'
+            #   subscription_name: 'Subscription Name 2'
         steps:
           - task: GoTool@0
             displayName: 'Install Go (for aztfexport)'
@@ -196,3 +181,4 @@ stages:
                 -LookbackHours 24
               azurePowerShellVersion: 'LatestVersion'
             continueOnError: true
+
