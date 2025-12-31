@@ -87,6 +87,36 @@ def main():
         logger.error("No subscriptions found. Check Azure CLI authentication and permissions.")
         sys.exit(1)
     
+    # Filter by EXPORT_SUBSCRIPTIONS if provided (new feature)
+    # Always use auto-discovery first (core functionality preserved)
+    export_subscriptions = os.getenv('EXPORT_SUBSCRIPTIONS')
+    if export_subscriptions:
+        try:
+            # Try parsing as JSON array
+            subscription_list = json.loads(export_subscriptions)
+            if isinstance(subscription_list, str):
+                # Single subscription ID as string
+                subscription_list = [subscription_list]
+            elif not isinstance(subscription_list, list):
+                subscription_list = [subscription_list]
+        except json.JSONDecodeError:
+            # Single subscription ID as plain string
+            subscription_list = [export_subscriptions]
+        
+        # Filter to only requested subscriptions
+        subscriptions = [
+            sub for sub in subscriptions 
+            if sub.get('id') in subscription_list
+        ]
+        logger.info(f"Filtered to {len(subscriptions)} subscription(s) from export list")
+        
+        # Validate that all requested subscriptions were found
+        requested_set = set(subscription_list)
+        found_set = {sub.get('id') for sub in subscriptions}
+        missing = requested_set - found_set
+        if missing:
+            logger.warning(f"Requested subscription(s) not found or not accessible: {', '.join(missing)}")
+    
     exclude_subscriptions_raw = export_manager.config.get('exclude_subscriptions', {})
     # Flatten prod and non-prod lists into single list
     if isinstance(exclude_subscriptions_raw, dict):

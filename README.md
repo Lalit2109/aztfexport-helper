@@ -7,9 +7,12 @@ Automated solution to export Azure infrastructure resources from multiple subscr
 - 🔍 **Multi-Subscription Support**: Export resources from 35+ Azure subscriptions
 - 📦 **aztfexport Integration**: Uses Microsoft's official aztfexport tool for accurate Terraform generation
 - 🗂️ **Organized Structure**: Subscription → Resource Group folder hierarchy
-- 🚀 **Azure DevOps Pipeline**: Automated export and push to repositories
+- 🚀 **Azure DevOps Pipeline**: Automated export and push to repositories with parallel execution
 - 🔄 **Git Integration**: Automatic commit and push to Azure DevOps repos
 - 📝 **Comprehensive Logging**: Detailed export results and summaries
+- ⚡ **Parallel Execution**: Multiple subscriptions export concurrently (grouped by SPN)
+- 🎯 **Manual Selection**: Export specific subscriptions via pipeline parameters
+- 🔐 **SPN Override Support**: Optional per-subscription service connection mapping
 
 ## Prerequisites
 
@@ -42,8 +45,8 @@ go install github.com/Azure/aztfexport@latest
 ```
 
 4. **Configure subscriptions:**
-   - Edit `config/subscriptions.yaml` with your 35 subscription IDs
-   - Configure repository URLs for each subscription
+   - Subscriptions are auto-discovered from Azure CLI (no manual list needed)
+   - Optionally configure SPN overrides per subscription in `config/subscriptions.yaml`
 
 5. **Authenticate with Azure:**
    ```bash
@@ -55,19 +58,22 @@ go install github.com/Azure/aztfexport@latest
 
 ## Configuration
 
-### Subscription Configuration
+### Pipeline Execution Configuration
 
-Edit `config/subscriptions.yaml`:
+Edit `config/subscriptions.yaml` to optionally configure SPN overrides per subscription:
 
 ```yaml
-subscriptions:
-  - id: "your-subscription-id-1"
-    name: "Production Subscription 1"
-    environment: "prod"
-    repo_name: "terraform-prod-sub-1"
-    repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"
-    export_enabled: true
+# Pipeline execution configuration
+pipeline:
+  # Optional: SPN override per subscription (subscription_id → service_connection mapping)
+  # If subscription not listed here, uses default SPN (from azureServiceConnection variable)
+  subscription_spn_overrides:
+    "12345678-1234-1234-1234-123456789012": "spn-prod-connection"      # Production uses prod SPN
+    "87654321-4321-4321-4321-210987654321": "spn-dev-connection"       # Development uses dev SPN
+    # Other subscriptions not listed → use default SPN
 ```
+
+**Note**: Subscriptions are auto-discovered from Azure CLI. You don't need to manually list them. The SPN overrides are optional - if not configured, all subscriptions use the default service connection.
 
 ### Export Options
 
@@ -222,6 +228,36 @@ exports/
 **Note:** Git repositories (`.git/` folders) are only created when `git.push_to_repos: true` is set in config or `PUSH_TO_REPOS=true` environment variable is set.
 
 ## Azure DevOps Pipeline
+
+### Pipeline Execution Modes
+
+The pipeline supports two execution modes:
+
+1. **All Subscriptions Mode** (Default/Scheduled):
+   - Exports all discovered subscriptions
+   - Groups subscriptions by SPN (default or override)
+   - Executes in parallel (one job per SPN group)
+   - Runs automatically on schedule (Friday 8 AM UTC)
+
+2. **Selected Subscriptions Mode** (Manual):
+   - Export specific subscriptions via pipeline parameters
+   - Supports comma-separated subscription IDs: `"sub-id-1,sub-id-2,sub-id-3"`
+   - Each subscription runs in parallel using matrix strategy
+   - Skips email reporting to avoid noise
+
+### Manual Pipeline Run
+
+To export specific subscriptions manually:
+
+1. Click "Run pipeline" in Azure DevOps
+2. Set parameters:
+   - **Subscription IDs**: Comma-separated list (e.g., `"sub-id-1,sub-id-2"`)
+   - **Run Mode**: Select `selected`
+3. Pipeline will:
+   - Discover and validate the specified subscriptions
+   - Find SPN for each (override or default)
+   - Execute exports in parallel
+   - Skip email reporting
 
 ### Setup
 

@@ -5,9 +5,16 @@ This guide explains how to set up and use the Azure DevOps pipeline to export Az
 ## Overview
 
 The pipeline:
-1. **Exports** Azure resources using `aztfexport` for each subscription
-2. **Organizes** exports by subscription and resource group
-3. **Pushes** exported code to separate git repositories (one per subscription)
+1. **Discovers** all subscriptions using default SPN (or groups by SPN if overrides configured)
+2. **Exports** Azure resources using `aztfexport` for each subscription
+3. **Executes in parallel** - multiple subscriptions export concurrently (grouped by SPN)
+4. **Organizes** exports by subscription and resource group
+5. **Pushes** exported code to separate git repositories (one per subscription)
+
+### Execution Modes
+
+- **All Subscriptions** (Default): Exports all discovered subscriptions in parallel
+- **Selected Subscriptions** (Manual): Export specific subscriptions via pipeline parameters
 
 ## Prerequisites
 
@@ -68,16 +75,17 @@ git:
   push_to_repos: true                # Enable git push
   branch: "main"                     # Default branch
 
-# Subscriptions
-subscriptions:
-  - id: "subscription-id-1"
-    name: "Production Subscription 1"
-    environment: "prod"
-    export_enabled: true
-    repo_name: "terraform-prod-sub-1"  # Repository name
-    # OR use full URL:
-    # repo_url: "https://dev.azure.com/org/project/_git/terraform-prod-sub-1"
-    branch: "main"                     # Optional: override default branch
+# Pipeline execution configuration (optional)
+pipeline:
+  # Optional: SPN override per subscription
+  # If subscription not listed, uses default SPN (from azureServiceConnection variable)
+  subscription_spn_overrides:
+    "subscription-id-1": "spn-prod-connection"  # Production uses prod SPN
+    "subscription-id-2": "spn-dev-connection"  # Development uses dev SPN
+    # Other subscriptions → use default SPN
+
+# Note: Subscriptions are auto-discovered from Azure CLI
+# No need to manually list them unless you want SPN overrides
 ```
 
 ### Step 4: Create Repositories (Optional)
@@ -100,19 +108,39 @@ Repositories can be created automatically, or you can create them manually:
 
 ## How It Works
 
-### Export Process
+### Export Process (All Subscriptions Mode)
 
-1. **Installation**: Installs Go, Python, and `aztfexport`
-2. **Authentication**: Uses service connection to authenticate with Azure
-3. **Export**: For each enabled subscription:
-   - Lists all resource groups (excluding global excludes)
-   - Exports each resource group using `aztfexport`
-   - Creates folder structure: `exports/{subscription-name}/{resource-group-name}/`
-4. **Git Push** (if enabled):
-   - Initializes git repository in subscription folder
-   - Creates `.gitignore` and `README.md`
-   - Commits all Terraform files
-   - Pushes to Azure DevOps repository
+1. **Discovery Stage**: 
+   - Uses default SPN to discover all subscriptions
+   - Checks SPN overrides per subscription (if configured)
+   - Groups subscriptions by assigned SPN (default or override)
+   - Creates matrix for parallel execution
+
+2. **Export Stage**:
+   - **Installation**: Installs Go, Python, and `aztfexport` (per job)
+   - **Authentication**: Uses default service connection (compile-time resolution)
+   - **Parallel Execution**: One job per SPN group, each processes its assigned subscriptions
+   - For each subscription:
+     - Lists all resource groups (excluding global excludes)
+     - Exports each resource group using `aztfexport`
+     - Creates folder structure: `exports/{subscription-name}/{resource-group-name}/`
+   - **Git Push** (if enabled):
+     - Initializes git repository in subscription folder
+     - Creates `.gitignore` and `README.md`
+     - Commits all Terraform files
+     - Pushes to Azure DevOps repository
+
+### Export Process (Selected Subscriptions Mode)
+
+1. **Preparation Stage**:
+   - Parses comma-separated subscription IDs from parameters
+   - Validates subscriptions are accessible
+   - Finds SPN for each subscription (override or default)
+   - Creates matrix (one entry per subscription)
+
+2. **Export Stage**:
+   - Same as All Subscriptions Mode, but processes only selected subscriptions
+   - Each subscription runs in parallel (matrix strategy)
 
 ### Repository Structure
 
@@ -143,6 +171,34 @@ The pipeline:
 
 ## Configuration Options
 
+### Manual Run - Selected Subscriptions
+
+When running the pipeline manually, you can select specific subscriptions:
+
+1. Click "Run pipeline" in Azure DevOps
+2. Set parameters:
+   - **Subscription IDs**: `"sub-id-1,sub-id-2,sub-id-3"` (comma-separated)
+   - **Run Mode**: `selected`
+3. Pipeline will export only the specified subscriptions in parallel
+
+**Example**: Export two subscriptions
+- Subscription IDs: `"12345678-1234-1234-1234-123456789012,87654321-4321-4321-4321-210987654321"`
+- Run Mode: `selected`
+
+### SPN Override Configuration
+
+Configure different service connections per subscription:
+
+```yaml
+pipeline:
+  subscription_spn_overrides:
+    "sub-id-1": "spn-prod-connection"   # Production subscription
+    "sub-id-2": "spn-dev-connection"    # Development subscription
+    # sub-id-3 not listed → uses default SPN
+```
+
+**Note**: Due to Azure DevOps compile-time validation, all jobs use the default SPN for authentication. The override is for reference/logging. True per-subscription SPN authentication would require inline jobs or manual authentication.
+
 ### Disable Git Push (Testing)
 
 Set in variable group:
@@ -159,22 +215,14 @@ git:
 ### Per-Subscription Branch
 
 ```yaml
-subscriptions:
-  - id: "sub-1"
-    name: "Production"
-    branch: "main"      # Production uses main
-  - id: "sub-2"
-    name: "Development"
-    branch: "develop"    # Dev uses develop branch
+git:
+  branch: "main"  # Default branch
+  # Per-subscription branch override not currently supported in parallel mode
 ```
 
 ### Custom Repository URLs
 
-```yaml
-subscriptions:
-  - id: "sub-1"
-    repo_url: "https://dev.azure.com/org/project/_git/custom-repo-name"
-```
+Repositories are auto-created based on subscription names. See `git_manager.py` for repository URL generation logic.
 
 ## Troubleshooting
 

@@ -68,5 +68,14 @@ output:
   create_rg_folders: true
   # Clean up export directory after successful git push (saves disk space)
   cleanup_after_push: true
-  
+
+# Pipeline execution configuration
+pipeline:
+  # Optional: SPN override per subscription (subscription_id → service_connection mapping)
+  # If subscription not listed here, uses default SPN (from azureServiceConnection variable)
+  # Example:
+  # subscription_spn_overrides:
+  #   "12345678-1234-1234-1234-123456789012": "spn-prod-connection"
+  #   "87654321-4321-4321-4321-210987654321": "spn-dev-connection"
+  subscription_spn_overrides: {}
 

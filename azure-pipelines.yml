@@ -17,6 +17,19 @@ schedules:
     - master
   always: true  # Run even if there are no code changes
 
+parameters:
+  - name: subscriptionIds
+    displayName: 'Subscription IDs (Optional - comma-separated for manual export, e.g., "sub-id-1,sub-id-2")'
+    type: string
+    default: ''
+  - name: runMode
+    displayName: 'Run Mode'
+    type: string
+    default: 'all'
+    values:
+      - 'all'      # Export all subscriptions (scheduled/default)
+      - 'selected' # Export selected subscriptions (manual - uses subscriptionIds parameter)
+
 variables:
   - group: 'TerraformExport'  # Variable group with configuration
   - name: configPath
@@ -29,27 +42,20 @@ variables:
     value: 'true'  # Set to 'false' to disable git push
 
 stages:
-- stage: Export
-  displayName: 'Terraform Export'
+# Stage 1: Discover and Group Subscriptions (All Mode)
+- stage: DiscoverAndGroup
+  displayName: 'Discover Subscriptions and Group by SPN'
+  condition: eq('${{ parameters.runMode }}', 'all')
   pool:
     vmImage: 'ubuntu-latest'
   jobs:
-  - job: ExportJob
-    displayName: 'Export Azure Resources'
+  - job: DiscoveryJob
+    displayName: 'Discover and Group Subscriptions'
     steps:
-    # Step 1: Install prerequisites
     - task: GoTool@0
-      displayName: 'Install Go (for aztfexport)'
+      displayName: 'Install Go (for scripts)'
       inputs:
         version: '1.21.x'
-
-    - script: |
-        echo "Installing aztfexport..."
-        go install github.com/Azure/aztfexport@latest
-        export PATH=$PATH:$(go env GOPATH)/bin
-        aztfexport --version
-        echo "##vso[task.prependpath]$(go env GOPATH)/bin"
-      displayName: 'Install aztfexport'
 
     - task: UsePythonVersion@0
       displayName: 'Setup Python'
@@ -59,109 +65,163 @@ stages:
 
     - script: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-      displayName: 'Install Python dependencies'
+        pip install pyyaml
+      displayName: 'Install Python dependencies for scripts'
 
-    - task: TerraformInstaller@0
-      displayName: 'Install Terraform'
-      inputs:
-        terraformVersion: 'latest'
-
-    # Step 2: Clean previous exports
-    - script: |
-        echo "Cleaning output directory: $(outputDir)"
-        if [ -d "$(outputDir)" ]; then
-          rm -rf "$(outputDir)"
-        fi
-        mkdir -p "$(outputDir)"
-        echo "Output directory is now clean:"
-        ls -la "$(outputDir)" || echo "Directory is empty"
-      displayName: 'Clean export/output directory'
-
-    # Step 3: Configure Azure authentication and run export
     - task: AzureCLI@2
-      displayName: 'Azure Login and Export'
+      displayName: 'Discover Subscriptions with Default SPN'
       inputs:
-        azureSubscription: '$(azureServiceConnection)'  # Service connection name from variable group
+        azureSubscription: '$(azureServiceConnection)'  # Default SPN
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
         inlineScript: |
-          echo "Authenticating with Azure..."
-          az account show
-          echo "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$(az account show --query id -o tsv)"
-          echo "Logged in to subscription: $(az account show --query name -o tsv)"
+          echo "Discovering all subscriptions using default SPN..."
+          az account list --query '[].{id:id, name:name, state:state}' -o json > subscriptions.json
+          echo "Found subscriptions:"
+          cat subscriptions.json | python -m json.tool | head -20
           
-          # Verify Terraform is available
-          echo "Checking Terraform installation..."
-          terraform --version || echo "Warning: Terraform not found in PATH"
-          which terraform || echo "Warning: terraform command not found"
+          # Parse config to get SPN overrides and group subscriptions
+          python scripts/group-subscriptions-by-spn.py \
+            --subscriptions subscriptions.json \
+            --config $(configPath) \
+            --default-spn "$(azureServiceConnection)" \
+            --output matrix.json
           
-          # Configure Git
-          git config --global user.name "Azure Pipelines"
-          git config --global user.email "azure-pipelines@devops.com"
-          
-          # Set up environment variables
-          export PUSH_TO_REPOS=$(pushToRepos)
-          export GIT_BRANCH=$(gitBranch)
-          export OUTPUT_DIR=$(outputDir)
-          export LOG_LEVEL=INFO
-          export CONFIG_PATH=$(configPath)
-          export AZURE_DEVOPS_PAT=$(System.AccessToken)
-          export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
-          # Log Analytics configuration (set in variable group or pipeline variables)
-          export LOG_ANALYTICS_WORKSPACE_ID=$(LOG_ANALYTICS_WORKSPACE_ID)
-          export LOG_ANALYTICS_SHARED_KEY=$(LOG_ANALYTICS_SHARED_KEY)
-          
-          # Run export
-          echo "Starting Terraform export..."
-          python src/main.py
+          # Set matrix variable for next stage
+          MATRIX_JSON=$(cat matrix.json)
+          echo "##vso[task.setvariable variable=exportMatrix;isOutput=true]$MATRIX_JSON"
+          echo "Matrix created:"
+          cat matrix.json | python -m json.tool
       env:
-        SYSTEM_ACCESS_TOKEN: $(System.AccessToken)
-        LOG_ANALYTICS_WORKSPACE_ID: $(LOG_ANALYTICS_WORKSPACE_ID)
-        LOG_ANALYTICS_SHARED_KEY: $(LOG_ANALYTICS_SHARED_KEY)
+        azureServiceConnection: $(azureServiceConnection)
 
-    # Step 6: Publish export results as artifacts
-    - script: |
-        # Ensure output directory exists
-        if [ ! -d "$(outputDir)" ]; then
-          echo "Creating output directory: $(outputDir)"
-          mkdir -p "$(outputDir)"
-        fi
-        # Check if directory has content
-        if [ -z "$(ls -A $(outputDir) 2>/dev/null)" ]; then
-          echo "Warning: Output directory is empty, creating placeholder"
-          echo "No exports completed" > "$(outputDir)/README.txt"
-        fi
-        echo "Output directory contents:"
-        ls -la "$(outputDir)" || echo "Directory is empty"
-      displayName: 'Prepare Output Directory'
-      continueOnError: true
-
-    - task: PublishBuildArtifacts@1
-      displayName: 'Publish Export Results'
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Subscription Groups'
       inputs:
-        pathToPublish: '$(outputDir)'
-        artifactName: 'terraform-exports'
-        publishLocation: 'Container'
+        artifactName: 'subscription-groups'
+        path: 'matrix.json'
       condition: always()
 
-    # Step 7: Generate summary report
-    - script: |
-        if [ -f "$(outputDir)/export_results.json" ]; then
-          echo "##[section]Export Summary"
-          echo '```json'
-          cat "$(outputDir)/export_results.json" | python -m json.tool
-          echo '```'
-        else
-          echo "Export results file not found"
-        fi
-      displayName: 'Generate Summary Report'
-      continueOnError: true
+# Stage 2: Export All Subscriptions (All Mode)
+- stage: Export
+  displayName: 'Parallel Terraform Export'
+  dependsOn: DiscoverAndGroup
+  condition: eq('${{ parameters.runMode }}', 'all')
+  pool:
+    vmImage: 'ubuntu-latest'
+  jobs:
+  - job: ExportJob
+    strategy:
+      matrix: $[ dependencies.DiscoverAndGroup.outputs['DiscoveryJob.exportMatrix'] ]
+    template: azure-pipelines/templates/export-job-template.yml
+    parameters:
+      # CRITICAL: Use default SPN for authentication (compile-time resolution)
+      # Matrix variable $(serviceConnection) is for reference/logging only
+      # Azure DevOps validates azureSubscription at compile time, not runtime
+      serviceConnection: '$(azureServiceConnection)'  # Default SPN (compile-time)
+      subscriptionIds: $(subscriptions)  # Matrix variable (runtime)
+      outputDir: '$(Pipeline.Workspace)/exports-$(serviceConnection)'
+      configPath: '$(configPath)'
+      defaultServiceConnection: '$(azureServiceConnection)'
 
+# Stage 3: Export Selected Subscriptions (Selected Mode)
+- stage: ExportSelected
+  displayName: 'Export Selected Subscriptions'
+  condition: and(eq('${{ parameters.runMode }}', 'selected'), ne('${{ parameters.subscriptionIds }}', ''))
+  pool:
+    vmImage: 'ubuntu-latest'
+  jobs:
+  - job: PrepareSubscriptionMatrix
+    displayName: 'Prepare Subscription Matrix'
+    steps:
+    - task: GoTool@0
+      displayName: 'Install Go (for scripts)'
+      inputs:
+        version: '1.21.x'
+
+    - task: UsePythonVersion@0
+      displayName: 'Setup Python'
+      inputs:
+        versionSpec: '3.10'
+        addToPath: true
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install pyyaml
+      displayName: 'Install Python dependencies for scripts'
+
+    - task: AzureCLI@2
+      displayName: 'Discover Subscriptions and Find SPNs'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'  # Use default SPN for discovery
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Parse comma-separated subscription IDs
+          SUB_IDS="${{ parameters.subscriptionIds }}"
+          IFS=',' read -ra SUB_ARRAY <<< "$SUB_IDS"
+          
+          # Verify each subscription exists and is accessible
+          VALID_SUBS=()
+          for SUB_ID in "${SUB_ARRAY[@]}"; do
+            SUB_ID=$(echo "$SUB_ID" | xargs)  # Trim whitespace
+            if az account show --subscription "$SUB_ID" > /dev/null 2>&1; then
+              VALID_SUBS+=("$SUB_ID")
+              echo "✓ Subscription $SUB_ID is accessible"
+            else
+              echo "⚠ Warning: Subscription $SUB_ID not accessible, skipping"
+            fi
+          done
+          
+          if [ ${#VALID_SUBS[@]} -eq 0 ]; then
+            echo "##[error]No accessible subscriptions found"
+            exit 1
+          fi
+          
+          # For each subscription, find its SPN and create matrix entry
+          python scripts/prepare-subscription-matrix.py \
+            --subscription-ids "$(IFS=','; echo "${VALID_SUBS[*]}")" \
+            --config $(configPath) \
+            --default-spn "$(azureServiceConnection)" \
+            --output matrix.json
+          
+          # Set matrix variable for next job
+          MATRIX_JSON=$(cat matrix.json)
+          echo "##vso[task.setvariable variable=exportMatrix;isOutput=true]$MATRIX_JSON"
+          echo "Matrix created:"
+          cat matrix.json | python -m json.tool
+      env:
+        azureServiceConnection: $(azureServiceConnection)
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Subscription Matrix'
+      inputs:
+        artifactName: 'subscription-matrix'
+        path: 'matrix.json'
+      condition: always()
+
+  - job: ExportJob
+    dependsOn: PrepareSubscriptionMatrix
+    strategy:
+      matrix: $[ dependencies.PrepareSubscriptionMatrix.outputs['exportMatrix'] ]
+    template: azure-pipelines/templates/export-job-template.yml
+    parameters:
+      # CRITICAL: Template parameters must resolve at compile time
+      # Cannot use matrix variable $(serviceConnection) here - use default SPN
+      # Matrix variable is available at runtime but templates expand at compile time
+      serviceConnection: '$(azureServiceConnection)'  # Default SPN (compile-time resolution)
+      subscriptionIds: '["$(subscriptionId)"]'  # Matrix variable (runtime, OK for JSON string)
+      outputDir: '$(Pipeline.Workspace)/exports-$(subscriptionId)'
+      configPath: '$(configPath)'
+      defaultServiceConnection: '$(azureServiceConnection)'
+
+# Stage 4: Send Email Report
 - stage: SendEmailReport
   displayName: 'Send Backup Email Report'
-  dependsOn: Export
-  condition: always()  # Run even if export stage fails
+  dependsOn:
+    - Export
+    - ExportSelected
+  condition: and(always(), ne('${{ parameters.runMode }}', 'selected'))  # Skip for manual selected runs
   pool:
     vmImage: 'windows-latest'  # Windows needed for PowerShell
   jobs:
@@ -184,4 +244,3 @@ stages:
           -LookbackHours 24
         azurePowerShellVersion: 'LatestVersion'
       continueOnError: true  # Don't fail pipeline if email fails
-
