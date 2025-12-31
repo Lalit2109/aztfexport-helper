@@ -1,0 +1,18 @@
+# Schedule Configuration
+# Maps subscriptions to different schedules
+
+schedules:
+  schedule1:
+    subscriptions:
+      # - "subscription-id-1"
+      # - "subscription-id-2"
+  schedule2:
+    subscriptions:
+      # - "subscription-id-3"
+      # - "subscription-id-4"
+
+# Exclude subscriptions from all schedules
+exclude_subscriptions:
+  # - "subscription-id-to-exclude-1"
+  # - "subscription-id-to-exclude-2"
+

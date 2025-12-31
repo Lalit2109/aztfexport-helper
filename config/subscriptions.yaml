@@ -1,14 +1,6 @@
 # Azure Subscriptions Configuration
-
-# Exclude subscriptions from export (all others are exported)
-# Can exclude by subscription ID or subscription name
-exclude_subscriptions:
-  prod: []
-    # - "subscription-id-prod-1"  # Exclude by ID
-    # - "Production Subscription Name"  # Exclude by name
-  non-prod: []
-    # - "subscription-id-non-prod-1"  # Exclude by ID
-    # - "Development Subscription Name"  # Exclude by name
+# Note: Subscription discovery and exclusion is now handled by Azure Pipeline
+# This file contains only export configuration settings
 
 # Global resource group exclusions (wildcards supported: *, ?)
 global_excludes:
@@ -26,7 +18,7 @@ global_excludes:
 logging:
   level: INFO
 
-# Subscriptions are auto-discovered from Azure CLI (no manual list needed)
+# Subscription discovery is handled by Azure Pipeline
 
 # aztfexport configuration
 aztfexport:
@@ -64,8 +56,6 @@ git:
 # Output configuration
 output:
   base_dir: "./exports"
-  # Create resource group subfolders (true) or flat subscription folder (false)
-  create_rg_folders: true
   # Clean up export directory after successful git push (saves disk space)
   cleanup_after_push: true
   

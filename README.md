@@ -234,7 +234,7 @@ exports/
      - `AZURE_TENANT_ID`: (Optional, if using service principal)
 
 2. **Configure Pipeline:**
-   - Import `azure-pipelines.yml` to your Azure DevOps project
+   - Import `azure-pipelines/azure-pipelines.yml` to your Azure DevOps project
    - Grant pipeline permissions to access Azure subscriptions
    - Grant pipeline permissions to push to repositories
 

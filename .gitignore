@@ -23,6 +23,7 @@ exports/
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 
@@ -32,4 +33,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Archive/Old Code
+archive/
+
+# Documentation
+docs/
 

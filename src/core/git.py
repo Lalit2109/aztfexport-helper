@@ -1,5 +1,5 @@
 """
-Git Manager for pushing exported Terraform code to Azure DevOps repositories
+Git Service for pushing exported Terraform code to Azure DevOps repositories
 """
 
 import os
@@ -7,14 +7,18 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import quote, urlparse
-from logger import get_logger
+from .logger import get_logger
 
 
-class GitManager:
+class GitService:
     """Manages Git operations for pushing Terraform exports to repositories"""
     
     def __init__(self, config: Dict[str, Any]):
-        """Initialize Git Manager"""
+        """Initialize Git Service
+        
+        Args:
+            config: Configuration dictionary
+        """
         self.logger = get_logger()
         self.config = config
         self.azure_devops_config = config.get('azure_devops', {})
@@ -30,11 +34,9 @@ class GitManager:
         project = self.azure_devops_config.get('project')
         
         if org and project:
-            # Use original subscription name (don't sanitize) - Azure DevOps supports spaces
-            # URL encoding will handle spaces and special characters properly
             encoded_org = quote(org, safe='')
             encoded_project = quote(project, safe='')
-            encoded_repo = quote(subscription_name, safe='')  # Don't sanitize, just encode
+            encoded_repo = quote(subscription_name, safe='')
             return f"https://dev.azure.com/{encoded_org}/{encoded_project}/_git/{encoded_repo}"
         
         return None
@@ -45,15 +47,14 @@ class GitManager:
         name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
         return name.lower()
     
-    
     def _get_pat_token(self) -> Optional[str]:
         """Get Azure DevOps PAT token from environment"""
         return os.getenv('AZURE_DEVOPS_PAT') or os.getenv('SYSTEM_ACCESS_TOKEN')
     
     def _get_branch(self, subscription: Dict[str, Any]) -> str:
-        """Get main branch name (always main for latest export)"""
+        """Get main branch name"""
         base_branch = os.getenv('GIT_BRANCH') or self.git_config.get('branch', 'main')
-        return base_branch  # Always use main for latest
+        return base_branch
     
     def _get_backup_branch_name(self) -> str:
         """Get backup branch name with current date"""
@@ -153,20 +154,13 @@ This repository contains Terraform code for Azure resources exported from subscr
 
 ## Structure
 
-Each resource group is organized in its own directory:
-
-```
-resource-group-name/
-├── main.tf
-├── providers.tf
-└── ...
-```
+Resources are organized in the exported directory structure.
 
 ## Usage
 
-1. Navigate to a resource group directory:
+1. Navigate to the export directory:
    ```bash
-   cd resource-group-name
+   cd .
    ```
 
 2. Initialize Terraform:
@@ -254,7 +248,6 @@ resource-group-name/
     def _create_backup_branch(self, repo_path: Path, branch: str, backup_branch: str, repo_url: str) -> bool:
         """Create a backup branch from the current branch"""
         try:
-            # Create backup branch from current branch
             result = subprocess.run(
                 ['git', 'branch', backup_branch],
                 cwd=str(repo_path),
@@ -266,7 +259,6 @@ resource-group-name/
                 self.logger.warning(f"Could not create backup branch: {result.stderr}")
                 return False
             
-            # Push backup branch
             pat_token = self._get_pat_token()
             if not pat_token:
                 self.logger.warning("PAT token not available for backup branch push")
@@ -297,12 +289,11 @@ resource-group-name/
             return False
     
     def _cleanup_old_backup_branches(self, repo_path: Path, repo_url: str, retention_count: int = 10) -> bool:
-        """Clean up backup branches, keeping only the most recent N (retention_count)"""
+        """Clean up backup branches, keeping only the most recent N"""
         try:
             from datetime import datetime
             import re
             
-            # Get all remote backup branches
             pat_token = self._get_pat_token()
             if not pat_token:
                 self.logger.warning("PAT token not available for branch cleanup")
@@ -327,12 +318,10 @@ resource-group-name/
             
             branches_with_dates = []
             
-            # Parse branch names and check dates
             for line in result.stdout.strip().split('\n'):
                 if not line.strip():
                     continue
                 
-                # Extract branch name (format: refs/heads/backup-YYYY-MM-DD)
                 match = re.search(r'refs/heads/(backup-\d{4}-\d{2}-\d{2})', line)
                 if match:
                     branch_name = match.group(1)
@@ -348,10 +337,8 @@ resource-group-name/
                 self.logger.debug("No parsable backup branches found to cleanup")
                 return True
 
-            # Sort branches by date (newest first)
             branches_with_dates.sort(key=lambda x: x[1], reverse=True)
 
-            # Determine which branches to keep and which to delete
             branches_to_keep = [b for b, _ in branches_with_dates[:retention_count]]
             branches_to_delete = [b for b, _ in branches_with_dates[retention_count:]]
 
@@ -363,7 +350,6 @@ resource-group-name/
 
                 for branch in branches_to_delete:
                     try:
-                        # Delete remote branch
                         delete_result = subprocess.run(
                             ['git', 'push', 'origin', '--delete', branch],
                             cwd=str(repo_path),
@@ -418,11 +404,7 @@ resource-group-name/
             return False
     
     def _push_to_remote(self, repo_path: Path, branch: str, repo_url: str, is_main: bool = False) -> bool:
-        """Push changes to remote repository
-        
-        Note: These repositories are used only for backup, so force-push is acceptable
-        for both main and backup branches.
-        """
+        """Push changes to remote repository"""
         pat_token = self._get_pat_token()
         if not pat_token:
             self.logger.error("PAT token not available for push")
@@ -449,7 +431,6 @@ resource-group-name/
                 text=True
             )
 
-            # Push with authentication (force push is acceptable for backup repos)
             result = subprocess.run(
                 ['git', 'push', '-u', 'origin', branch, '--force'],
                 cwd=str(repo_path),
@@ -465,7 +446,6 @@ resource-group-name/
                 error_msg = result.stderr or result.stdout
                 self.logger.error(f"Failed to push: {error_msg}")
                 
-                # Check if repository doesn't exist
                 if 'not found' in error_msg.lower() or 'does not exist' in error_msg.lower():
                     self.logger.error("")
                     self.logger.error("Repository does not exist in Azure DevOps.")
@@ -497,9 +477,8 @@ resource-group-name/
             self.logger.warning(f"No repository URL configured for subscription {subscription.get('id')}")
             return False
         
-        main_branch = self._get_branch(subscription)  # Returns "main"
-        backup_branch = self._get_backup_branch_name()  # Returns "backup-YYYY-MM-DD"
-        # Keep only the last N backup branches (by date)
+        main_branch = self._get_branch(subscription)
+        backup_branch = self._get_backup_branch_name()
         retention_count = int(self.git_config.get('backup_retention_count', 10))
         
         self.logger.info(f"Pushing to repository: {repo_url}")
@@ -518,23 +497,19 @@ resource-group-name/
         if not self._add_remote(export_path, repo_url):
             return False
         
-        # Checkout main branch
         if not self._checkout_branch(export_path, main_branch):
             self.logger.warning("Continuing with current branch")
         
         if not self._commit_changes(export_path, subscription):
             return False
         
-        # Push to main branch (latest)
         if not self._push_to_remote(export_path, main_branch, repo_url, is_main=True):
             return False
         
-        # Create backup branch
         self.logger.info(f"Creating backup branch: {backup_branch}")
         if not self._create_backup_branch(export_path, main_branch, backup_branch, repo_url):
             self.logger.warning("Failed to create backup branch, but main push succeeded")
         
-        # Cleanup old backup branches
         self.logger.info(f"Cleaning up backup branches, keeping last {retention_count} runs...")
         self._cleanup_old_backup_branches(export_path, repo_url, retention_count)
         

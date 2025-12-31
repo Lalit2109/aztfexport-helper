@@ -11,7 +11,7 @@ import base64
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from requests import post, RequestException
-from logger import get_logger
+from .logger import get_logger
 
 
 class LogAnalyticsSender:
@@ -66,15 +66,12 @@ class LogAnalyticsSender:
             return False
         
         try:
-            # Convert data to JSON
             json_body = json.dumps(data)
             content_length = len(json_body.encode('utf-8'))
             
-            # Build signature
             date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
             signature = self._build_signature(date, content_length)
             
-            # Build headers
             headers = {
                 "Authorization": signature,
                 "Log-Type": log_type,
@@ -83,7 +80,6 @@ class LogAnalyticsSender:
                 "time-generated-field": "TimeGenerated"
             }
             
-            # Send request
             response = post(self.uri, data=json_body, headers=headers, timeout=30)
             response.raise_for_status()
             
