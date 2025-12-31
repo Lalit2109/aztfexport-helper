@@ -121,8 +121,8 @@ jobs:
       - task: PublishPipelineArtifact@1
         displayName: 'Publish Export Artifacts'
         inputs:
-          targetPath: '${{ parameters.outputDir }}'
-          artifactName: 'terraform-export-${{ replace(parameters.subscriptionId, '-', '_') }}'
+          targetPath: ${{ parameters.outputDir }}
+          artifactName: terraform-export-${{ replace(parameters.subscriptionId, '-', '_') }}
           publishLocation: 'pipeline'
         condition: succeededOrFailed()
         continueOnError: true
