@@ -56,6 +56,10 @@ git:
 # Output configuration
 output:
   base_dir: "./exports"
+  # Create separate folder per resource group (default: true)
+  # If true: exports/subscription-name/resource-group-1/, exports/subscription-name/resource-group-2/, etc.
+  # If false: exports/subscription-name/ (all resource groups in one folder)
+  create_rg_folders: true
   # Clean up export directory after successful git push (saves disk space)
   cleanup_after_push: true
   

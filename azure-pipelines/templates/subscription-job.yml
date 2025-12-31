@@ -89,13 +89,13 @@ jobs:
             export LOG_LEVEL=INFO
             export CONFIG_PATH=${{ parameters.configPath }}
             export SUBSCRIPTION_ID=${{ parameters.subscriptionId }}
-            export SUBSCRIPTION_NAME=${{ coalesce(parameters.subscriptionName, parameters.subscriptionId) }}
+            export SUBSCRIPTION_NAME="${{ coalesce(parameters.subscriptionName, parameters.subscriptionId) }}"
             export AZURE_DEVOPS_PAT=$(System.AccessToken)
             export SYSTEM_ACCESS_TOKEN=$(System.AccessToken)
             export LOG_ANALYTICS_WORKSPACE_ID=$(LOG_ANALYTICS_WORKSPACE_ID)
             export LOG_ANALYTICS_SHARED_KEY=$(LOG_ANALYTICS_SHARED_KEY)
             
-            echo "Starting Terraform export for subscription: ${{ coalesce(parameters.subscriptionName, parameters.subscriptionId) }}"
+            echo "Starting Terraform export for subscription: $SUBSCRIPTION_NAME"
             python src/main.py
         env:
           SYSTEM_ACCESS_TOKEN: $(System.AccessToken)

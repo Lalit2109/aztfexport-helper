@@ -1,6 +1,6 @@
 """
 Azure Resource Export Service
-Uses aztfexport to export resources at subscription level
+Uses aztfexport to export resources per resource group or at subscription level
 """
 
 import os
@@ -15,7 +15,7 @@ from .azure_client import AzureClient
 
 
 class ExportService:
-    """Manages Azure resource exports using aztfexport at subscription level"""
+    """Manages Azure resource exports using aztfexport"""
     
     def __init__(
         self,
@@ -47,10 +47,10 @@ class ExportService:
         self.azure_client = AzureClient(self.az_cli_path)
     
     def get_resource_groups(self) -> List[str]:
-        """Get list of resource groups in subscription (for reporting/logging)
+        """Get list of resource groups in subscription (excluded ones are filtered out)
         
         Returns:
-            List of resource group names to process
+            List of resource group names to process (excluded ones already removed)
         """
         global_excludes = self.config.get('global_excludes', {}).get('resource_groups', [])
         local_excludes = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
@@ -65,26 +65,21 @@ class ExportService:
     def _build_resource_graph_query(
         self,
         exclude_resource_types: List[str],
-        exclude_resource_groups: List[str],
         custom_query: Optional[str] = None
     ) -> str:
-        """Build Azure Resource Graph query to exclude resource types and resource groups"""
+        """Build Azure Resource Graph query to exclude resource types"""
         if custom_query:
             return custom_query
         
+        if not exclude_resource_types:
+            return ""
+        
         conditions = []
+        for resource_type in exclude_resource_types:
+            escaped_type = resource_type.replace("'", "''")
+            conditions.append(f"type != '{escaped_type}'")
         
-        if exclude_resource_types:
-            for resource_type in exclude_resource_types:
-                escaped_type = resource_type.replace("'", "''")
-                conditions.append(f"type != '{escaped_type}'")
-        
-        if exclude_resource_groups:
-            for rg in exclude_resource_groups:
-                escaped_rg = rg.replace("'", "''")
-                conditions.append(f"resourceGroup != '{escaped_rg}'")
-        
-        return " and ".join(conditions) if conditions else ""
+        return " and ".join(conditions)
     
     def _sanitize_name(self, name: str) -> str:
         """Sanitize name for filesystem"""
@@ -92,103 +87,84 @@ class ExportService:
         name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
         return name.lower()
     
-    def export_subscription(self) -> Dict[str, Any]:
-        """Export entire subscription using aztfexport
+    def _export_resource_group(
+        self,
+        resource_group: str,
+        output_path: Path
+    ) -> bool:
+        """Export a single resource group using aztfexport
         
+        Args:
+            resource_group: Resource group name to export
+            output_path: Output directory for this resource group
+            
         Returns:
-            Dictionary with export results
+            True if export succeeded, False otherwise
         """
-        self.logger.info("=" * 60)
-        self.logger.info(f"Exporting subscription: {self.subscription_name}")
-        self.logger.info(f"Subscription ID: {self.subscription_id}")
-        self.logger.info("=" * 60)
+        self.logger.info(f"Exporting resource group: {resource_group}")
         
-        sub_dir = Path(self.base_dir) / self._sanitize_name(self.subscription_name)
-        sub_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.logger.info("Discovering resource groups...")
-        resource_groups = self.get_resource_groups()
-        
-        results = {
-            'subscription_id': self.subscription_id,
-            'subscription_name': self.subscription_name,
-            'total_rgs': len(resource_groups),
-            'successful_rgs': 0,
-            'failed_rgs': 0,
-            'error': None
-        }
-        
-        if not resource_groups:
-            self.logger.info("No resource groups to export")
-            return results
+        output_path = output_path.resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        rg_name = str(resource_group).strip()
         
         exclude_resource_types = self.config.get('aztfexport', {}).get('exclude_resource_types', [])
-        exclude_resource_groups_config = self.config.get('aztfexport', {}).get('exclude_resource_groups', [])
-        global_excludes = self.config.get('global_excludes', {}).get('resource_groups', [])
-        all_exclude_rgs = list(set(exclude_resource_groups_config + global_excludes))
         custom_query = self.config.get('aztfexport', {}).get('query', None)
+        use_query_mode = bool(exclude_resource_types) or bool(custom_query)
         
-        use_query_mode = bool(exclude_resource_types) or bool(all_exclude_rgs) or bool(custom_query)
-        
-        if all_exclude_rgs and not use_query_mode:
-            use_query_mode = True
-        
-        output_path = sub_dir.resolve()
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        try:
-            if use_query_mode:
-                query = self._build_resource_graph_query(exclude_resource_types, all_exclude_rgs, custom_query)
-                if query:
-                    self.logger.info("Using query mode to filter resources")
-                    if exclude_resource_types:
-                        self.logger.debug(f"Excluding resource types: {', '.join(exclude_resource_types)}")
-                    if all_exclude_rgs:
-                        self.logger.debug(f"Excluding resource groups: {', '.join(all_exclude_rgs)}")
-                    self.logger.debug(f"Query: {query}")
-                    
-                    cmd = [
-                        'aztfexport',
-                        'query',
-                        '--subscription-id', self.subscription_id,
-                        '--output-dir', str(output_path),
-                        '--non-interactive',
-                        '--plain-ui'
-                    ]
-                    
-                    additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
-                    cmd.extend(additional_flags)
-                    cmd.append(query)
-                else:
-                    use_query_mode = False
-            
-            if not use_query_mode:
+        if use_query_mode:
+            query = self._build_resource_graph_query(exclude_resource_types, custom_query)
+            if query:
+                self.logger.debug("Using query mode to exclude resource types")
+                if exclude_resource_types:
+                    self.logger.debug(f"Excluding types: {', '.join(exclude_resource_types)}")
+                self.logger.debug(f"Query: {query}")
+                
+                query_with_rg = f"{query} and resourceGroup == '{rg_name}'" if query else f"resourceGroup == '{rg_name}'"
+                
                 cmd = [
                     'aztfexport',
-                    'subscription',
+                    'query',
                     '--subscription-id', self.subscription_id,
                     '--output-dir', str(output_path),
                     '--non-interactive',
                     '--plain-ui'
                 ]
                 
-                resource_types = self.config.get('aztfexport', {}).get('resource_types', [])
-                if resource_types:
-                    for rt in resource_types:
-                        cmd.extend(['--resource-type', rt])
-                
-                exclude_resources = self.config.get('aztfexport', {}).get('exclude_resources', [])
-                if exclude_resources:
-                    for er in exclude_resources:
-                        cmd.extend(['--exclude', er])
-                
                 additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
                 cmd.extend(additional_flags)
+                cmd.append(query_with_rg)
+            else:
+                use_query_mode = False
+        
+        if not use_query_mode:
+            cmd = [
+                'aztfexport',
+                'resource-group',
+                '--subscription-id', self.subscription_id,
+                '--output-dir', str(output_path),
+                '--non-interactive',
+                '--plain-ui'
+            ]
             
+            resource_types = self.config.get('aztfexport', {}).get('resource_types', [])
+            if resource_types:
+                for rt in resource_types:
+                    cmd.extend(['--resource-type', rt])
+            
+            exclude_resources = self.config.get('aztfexport', {}).get('exclude_resources', [])
+            if exclude_resources:
+                for er in exclude_resources:
+                    cmd.extend(['--exclude', er])
+            
+            additional_flags = self.config.get('aztfexport', {}).get('additional_flags', [])
+            cmd.extend(additional_flags)
+            cmd.append(rg_name)
+        
+        try:
             cmd_display = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in cmd)
             self.logger.debug(f"Running command: {cmd_display}")
+            self.logger.debug(f"Resource group: {rg_name}")
             self.logger.debug(f"Output directory: {output_path}")
-            self.logger.info("This may take several minutes...")
             
             env = os.environ.copy()
             env['AZTFEXPORT_NON_INTERACTIVE'] = 'true'
@@ -204,7 +180,6 @@ class ExportService:
             else:
                 final_cmd = cmd
             
-            self.logger.info(f"Starting export for subscription {self.subscription_name}...")
             process = subprocess.Popen(
                 final_cmd,
                 cwd=str(Path(self.base_dir).resolve()),
@@ -219,7 +194,6 @@ class ExportService:
             
             output_lines = []
             seen_lines = set()
-            failed_resources = []
             
             try:
                 import sys
@@ -231,57 +205,21 @@ class ExportService:
                             output_lines.append(line)
                             sys.stdout.write(line + '\n')
                             sys.stdout.flush()
-                            
-                            if 'error' in line.lower() or 'failed' in line.lower():
-                                failed_resources.append(line)
             finally:
                 process.stdout.close()
                 exit_code = process.wait(timeout=3600)
             
-            full_output = '\n'.join(output_lines)
-            self.logger.info("")
-            
             if exit_code == 0:
-                self.logger.info("=" * 60)
-                self.logger.success(f"✓ EXPORT COMPLETED SUCCESSFULLY for {self.subscription_name}")
-                self.logger.info("=" * 60)
-                
-                tf_files_direct = list(output_path.glob('*.tf'))
-                tf_files_recursive = list(output_path.rglob('*.tf'))
-                tf_files = tf_files_recursive if tf_files_recursive else tf_files_direct
-                
+                tf_files = list(output_path.glob('*.tf')) + list(output_path.rglob('*.tf'))
                 if tf_files:
-                    self.logger.success(f"✓✓ Successfully exported {self.subscription_name}")
-                    self.logger.info(f"   Created {len(tf_files)} Terraform file(s)")
-                    results['successful_rgs'] = len(resource_groups)
-                    results['failed_rgs'] = 0
+                    self.logger.success(f"✓ Successfully exported {rg_name}")
+                    return True
                 else:
-                    self.logger.warning(f"⚠ Export completed but no .tf files found for {self.subscription_name}")
-                    results['successful_rgs'] = 0
-                    results['failed_rgs'] = len(resource_groups)
+                    self.logger.warning(f"⚠ Export completed but no .tf files found for {rg_name}")
+                    return False
             else:
-                self.logger.info("=" * 60)
-                self.logger.error(f"✗ EXPORT FAILED for {self.subscription_name} (exit code: {exit_code})")
-                self.logger.info("=" * 60)
-                
-                if full_output:
-                    error_lines = full_output.strip().split('\n')
-                    self.logger.error("   Error output (last 20 lines):")
-                    for line in error_lines[-20:]:
-                        if line.strip():
-                            self.logger.error(f"     {line}")
-                
-                results['successful_rgs'] = 0
-                results['failed_rgs'] = len(resource_groups)
-                results['error'] = f"Export failed with exit code {exit_code}"
-                if failed_resources:
-                    results['failed_resources'] = failed_resources[:10]
-            
-            self.logger.success(f"Export completed for {self.subscription_name}")
-            self.logger.info(f"Successful: {results['successful_rgs']}/{results['total_rgs']}")
-            self.logger.info(f"Failed: {results['failed_rgs']}/{results['total_rgs']}")
-            
-            return results
+                self.logger.error(f"✗ Export failed for {rg_name} (exit code: {exit_code})")
+                return False
                 
         except subprocess.TimeoutExpired:
             if 'process' in locals():
@@ -289,23 +227,90 @@ class ExportService:
                     process.kill()
                 except:
                     pass
-            self.logger.error(f"✗✗ Timeout exporting {self.subscription_name} (exceeded 1 hour)")
-            results['error'] = "Export timeout exceeded 1 hour"
-            results['failed_rgs'] = len(resource_groups)
-            return results
+            self.logger.error(f"✗✗ Timeout exporting {rg_name} (exceeded 1 hour)")
+            return False
         except FileNotFoundError:
             self.logger.error("aztfexport not found. Make sure it's installed and in PATH")
             self.logger.info("Install with: go install github.com/Azure/aztfexport@latest")
-            results['error'] = "aztfexport not found"
-            results['failed_rgs'] = len(resource_groups)
-            return results
+            return False
         except Exception as e:
-            self.logger.error(f"Error exporting {self.subscription_name}: {str(e)}")
+            self.logger.error(f"Error exporting {rg_name}: {str(e)}")
             import traceback
             traceback.print_exc()
-            results['error'] = str(e)
-            results['failed_rgs'] = len(resource_groups)
+            return False
+    
+    def export_subscription(self, create_rg_folders: Optional[bool] = None) -> Dict[str, Any]:
+        """Export subscription by exporting each resource group individually
+        
+        Args:
+            create_rg_folders: If True, create separate folder per resource group.
+                             If False, export all RGs to subscription folder.
+                             If None, use config value (default: True)
+        
+        Returns:
+            Dictionary with export results
+        """
+        self.logger.info("=" * 60)
+        self.logger.info(f"Exporting subscription: {self.subscription_name}")
+        self.logger.info(f"Subscription ID: {self.subscription_id}")
+        self.logger.info("=" * 60)
+        
+        sub_dir = Path(self.base_dir) / self._sanitize_name(self.subscription_name)
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.logger.info("Discovering resource groups...")
+        resource_groups = self.get_resource_groups()
+        
+        if create_rg_folders is None:
+            create_rg_folders = self.config.get('output', {}).get('create_rg_folders', True)
+        
+        results = {
+            'subscription_id': self.subscription_id,
+            'subscription_name': self.subscription_name,
+            'resource_groups': {},
+            'total_rgs': len(resource_groups),
+            'successful_rgs': 0,
+            'failed_rgs': 0,
+            'error': None
+        }
+        
+        if not resource_groups:
+            self.logger.info("No resource groups to export")
             return results
+        
+        self.logger.info(f"Exporting {len(resource_groups)} resource group(s)...")
+        if create_rg_folders:
+            self.logger.info("Creating separate folder per resource group")
+        else:
+            self.logger.info("Exporting all resource groups to subscription folder")
+        
+        for rg in resource_groups:
+            if create_rg_folders:
+                rg_dir = sub_dir / self._sanitize_name(rg)
+            else:
+                rg_dir = sub_dir
+            
+            success = self._export_resource_group(rg, rg_dir)
+            
+            if success:
+                results['resource_groups'][rg] = {
+                    'path': str(rg_dir),
+                    'status': 'success'
+                }
+                results['successful_rgs'] += 1
+            else:
+                results['resource_groups'][rg] = {
+                    'path': str(rg_dir),
+                    'status': 'failed'
+                }
+                results['failed_rgs'] += 1
+        
+        self.logger.info("")
+        self.logger.success(f"Export completed for {self.subscription_name}")
+        self.logger.info(f"Successful: {results['successful_rgs']}/{results['total_rgs']}")
+        self.logger.info(f"Failed: {results['failed_rgs']}/{results['total_rgs']}")
+        
+        return results
     
     def check_disk_space(self, min_free_percent: float = 5.0) -> bool:
         """Check if there's enough free disk space"""
@@ -324,4 +329,3 @@ class ExportService:
         except Exception as e:
             self.logger.warning(f"Could not check disk space: {str(e)}")
             return True
-
