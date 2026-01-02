@@ -1,6 +1,6 @@
 # Azure DevOps Pipeline for Terraform Export
 # Exports Azure resources using aztfexport and pushes to git repositories
-# Processes multiple subscriptions in parallel using separate jobs
+# Uses matrix strategy with maxParallel to limit concurrent jobs
 
 trigger: none
 pr: none
@@ -11,7 +11,7 @@ parameters:
     type: string
     default: ''
     # Note: This parameter is for reference only
-    # Jobs must be manually defined in the jobs section below
+    # Jobs must be manually defined in the matrix below
 
 variables:
   - group: 'TerraformExport'
@@ -30,23 +30,42 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     jobs:
-      # Add jobs for each subscription - each job runs in parallel
-      # Use the subscription-job.yml template for each subscription
-      # Example:
-      - template: azure-pipelines/templates/subscription-job.yml
-        parameters:
-          subscriptionId: 'sub-123'
-          subscriptionName: 'Production Subscription 1'
-          serviceConnection: 'spn-prod-subscription-123'
-      
-      - template: azure-pipelines/templates/subscription-job.yml
-        parameters:
-          subscriptionId: 'sub-456'
-          subscriptionName: 'Production Subscription 2'
-          serviceConnection: '$(azureServiceConnection)'
-      
-      # Add more template includes for additional subscriptions
-      # Each job runs in parallel automatically
+      - job: ExportJob
+        displayName: 'Export Azure Resources'
+        strategy:
+          matrix:
+            # Add all your subscriptions here
+            # Format: subscription-key (used for job name)
+            #   subscription_id: 'actual-subscription-id'
+            #   subscription_name: 'Display Name'
+            # Note: All subscriptions use the default service connection from variable group
+            # To use different service connections, you'll need separate jobs (not matrix)
+            
+            # Example subscriptions (replace with your 35 subscriptions):
+            sub1:
+              subscription_id: 'sub-123'
+              subscription_name: 'Production Subscription 1'
+            
+            sub2:
+              subscription_id: 'sub-456'
+              subscription_name: 'Production Subscription 2'
+            
+            # Add remaining 33 subscriptions here...
+            # sub3:
+            #   subscription_id: 'sub-789'
+            #   subscription_name: 'Production Subscription 3'
+            # ... (up to sub35)
+          maxParallel: 4  # ← Limits to 4 concurrent jobs (only 4 will run at a time)
+        steps:
+          - template: azure-pipelines/templates/subscription-steps.yml
+            parameters:
+              subscriptionId: $(subscription_id)
+              subscriptionName: $(subscription_name)
+              serviceConnection: '$(azureServiceConnection)'  # All use default service connection
+              configPath: $(configPath)
+              outputDir: $(outputDir)
+              gitBranch: $(gitBranch)
+              pushToRepos: $(pushToRepos)
 
   - stage: EmailReport
     displayName: 'Send Email Report'
